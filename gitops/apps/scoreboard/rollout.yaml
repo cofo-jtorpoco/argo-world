@@ -51,8 +51,8 @@ spec:
           env:
             - {name: MATCH_HOME,     value: "New Zealand"}   # promote-field: home
             - {name: MATCH_AWAY,     value: "Belgium"}   # promote-field: away
-            - {name: MATCH_SCORE,    value: "1-5"}        # promote-field: score
-            - {name: MATCH_REVISION, value: "6"}          # promote-field: revision
+            - {name: MATCH_SCORE,    value: "2-5"}        # promote-field: score
+            - {name: MATCH_REVISION, value: "7"}          # promote-field: revision
             - {name: MATCH_MINUTE,   value: "90"}          # promote-field: minute
             - {name: MATCH_FEED_URL, value: "http://match-feed.worldcup.svc.cluster.local:8080/match/current"}
             - name: POD_NAME
