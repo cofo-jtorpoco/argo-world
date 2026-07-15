@@ -40,7 +40,9 @@ spec:
       inputs:
         parameters: [{name: reason}]
       container:
-        image: bitnami/kubectl:1.31
+        # rancher/kubectl is multi-arch and reliably published; bitnami/kubectl tags
+        # were retired in 2025 (docker.io/bitnami/kubectl:1.31 -> not found).
+        image: rancher/kubectl:v1.31.0
         resources:
           requests: {cpu: 25m, memory: 48Mi}
           limits: {memory: 128Mi}
