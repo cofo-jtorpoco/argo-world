@@ -78,13 +78,18 @@ func main() {
 		log.Printf("poll: %s %d-%d rev=%d min=%d src=%s -> %s (%s)",
 			label(m), m.HomeScore, m.AwayScore, m.Revision, m.Minute, m.Source, kind, reason)
 		mirror(m, kind)
+		emitted := true
 		switch kind {
 		case "GOAL", "ANOMALY":
-			emit(m, kind, reason)
+			emitted = emit(m, kind, reason)
 		}
-		// Never advance prev past an anomaly: the corrupted read is not the new truth,
-		// so the next good read is re-evaluated against the last sane state.
-		if kind != "ANOMALY" {
+		// Advance prev only when there's nothing left to deliver. If a GOAL emit failed
+		// (e.g. the EventSource was momentarily down), keep prev so the next poll
+		// re-detects and re-emits instead of silently losing the goal. Never advance
+		// past an anomaly: the corrupted read is not the new truth.
+		if kind == "GOAL" && !emitted {
+			log.Printf("holding prev: GOAL emit failed, will retry next poll")
+		} else if kind != "ANOMALY" {
 			prev = m
 		}
 	}
@@ -115,7 +120,9 @@ func classify(prev, m *Match) (string, string) {
 	return "NO_CHANGE", "steady"
 }
 
-func emit(m *Match, kind, reason string) {
+// emit POSTs the event to the Argo Events webhook. Returns true only on a 2xx, so the
+// caller can decide whether to hold state for a retry.
+func emit(m *Match, kind, reason string) bool {
 	ev := event{
 		Type: kind, MatchID: m.MatchID, Home: m.Home, Away: m.Away,
 		Score: fmt.Sprintf("%d-%d", m.HomeScore, m.AwayScore),
@@ -126,10 +133,11 @@ func emit(m *Match, kind, reason string) {
 	resp, err := httpc.Post(eventURL, "application/json", bytes.NewReader(body))
 	if err != nil {
 		log.Printf("emit %s failed: %v", kind, err)
-		return
+		return false
 	}
 	defer resp.Body.Close()
 	log.Printf("emit %s -> %d (%s)", kind, resp.StatusCode, ev.Score)
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }
 
 func readMatch() (*Match, error) {
