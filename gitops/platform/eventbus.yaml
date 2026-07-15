@@ -10,6 +10,10 @@ metadata:
     argocd.argoproj.io/sync-wave: "-3"
 spec:
   jetstream:
+    # Required: without it the reconciler rejects the spec ("a version for jetstream
+    # needs to be specified") and the sync-wave gate blocks the EventSource/Sensors.
+    # Pinned to a concrete version from the controller's supported list (not "latest").
+    version: 2.10.10
     replicas: 1
     containerTemplate:
       resources:
