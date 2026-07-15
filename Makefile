@@ -21,13 +21,24 @@ login-ghcr: ## Log docker into GHCR using the gh token
 	gh auth token | docker login ghcr.io -u cofo-jtorpoco --password-stdin
 
 .PHONY: images
-images: ## Build + push the 3 images (linux/arm64) to GHCR
+images: ## Build + push the 3 images (linux/arm64) to GHCR (needs write:packages)
 	@for svc in $(SERVICES); do \
 	  echo "==> $$svc"; \
 	  docker buildx build --platform linux/arm64 \
 	    -t $(IMAGE_REPO)/$$svc:$(IMAGE_TAG) \
 	    --push src/$$svc || exit 1; \
 	done
+
+# Local path that needs NO GHCR scope: build and inject straight into the kind node's
+# containerd (Docker Desktop shares it), then restart the deployment. Use SVC=<name>.
+.PHONY: image-local
+image-local: ## Build one service and load it into the node (SVC=match-feed|match-watcher|scoreboard)
+	docker buildx build --platform linux/arm64 --provenance=false \
+	  -t $(IMAGE_REPO)/$(SVC):$(IMAGE_TAG) --load src/$(SVC)
+	docker save $(IMAGE_REPO)/$(SVC):$(IMAGE_TAG) | \
+	  docker exec -i desktop-control-plane ctr -n k8s.io images import -
+	kubectl -n $(NS_APP) rollout restart deploy/$(SVC) 2>/dev/null || \
+	  kubectl -n $(NS_APP) rollout restart rollout/$(SVC)
 
 .PHONY: bootstrap
 bootstrap: ## Install the 4 Argo control planes + the root Application
