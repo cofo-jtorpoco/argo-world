@@ -1,0 +1,30 @@
+# App layer: the match-feed wrapper, the match-watcher poll loop, and the scoreboard
+# Rollout with its stable/canary/root Services. This is the Application whose desired
+# state the promote/rollback workflows mutate via git.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: apps
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/cofo-jtorpoco/argo-world.git
+    targetRevision: main
+    path: gitops/apps
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: worldcup
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      # The Rollout's spec is Git-owned; abort only ever touches status, so selfHeal
+      # never fights the imperative rollback. ServerSideApply avoids spurious drift.
+      - ServerSideApply=true

@@ -1,0 +1,31 @@
+# The automatic rollback gate. During the canary, Rollouts hits /consistency on the
+# canary Service; the pod compares its baked score against the live source of truth.
+# jsonPath {$.consistent} extracts a bool into `result`, so the condition is
+# `result == true` (NOT result.consistent — that only works with jsonPath {$}).
+#
+# initialDelay + failureLimit:1 are load-bearing: at t=0 the canary Service has no
+# endpoints, the first probe gets connection-refused, and the default failureLimit:0
+# would abort the rollout on the HAPPY path. Lives in worldcup, same ns as the Rollout.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: score-consistency
+  namespace: worldcup
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  args:
+    - name: canary-svc
+  metrics:
+    - name: consistency
+      initialDelay: 15s
+      interval: 10s
+      count: 3
+      failureLimit: 1
+      successCondition: "result == true"
+      provider:
+        web:
+          method: GET
+          url: "http://{{ args.canary-svc }}/consistency"
+          timeoutSeconds: 5
+          jsonPath: "{$.consistent}"

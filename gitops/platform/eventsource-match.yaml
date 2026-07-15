@@ -1,0 +1,21 @@
+# Webhook EventSource. The controller creates a ClusterIP Service named
+# match-eventsource-svc; the watcher POSTs match events to it at :12000/match.
+# The HTTP body lands at data.body.* in the Sensor (this is the detail everyone
+# gets wrong) — port is a STRING, not an int.
+apiVersion: argoproj.io/v1alpha1
+kind: EventSource
+metadata:
+  name: match
+  namespace: argo-events
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  service:
+    ports:
+      - port: 12000
+        targetPort: 12000
+  webhook:
+    matchevent:
+      port: "12000"
+      endpoint: /match
+      method: POST

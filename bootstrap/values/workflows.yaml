@@ -1,0 +1,28 @@
+# Argo Workflows. server auth-mode=server so the UI opens without SSO on a local
+# cluster. The controller watches the `argo` namespace where Sensors submit workflows.
+controller:
+  resources:
+    requests: {cpu: 25m, memory: 128Mi}
+    limits: {memory: 384Mi}
+  # Reap finished workflow pods/objects aggressively so a busy match doesn't fill etcd.
+  workflowDefaults:
+    spec:
+      ttlStrategy:
+        secondsAfterCompletion: 300
+        secondsAfterSuccess: 180
+        secondsAfterFailure: 600
+      podGC:
+        strategy: OnPodCompletion
+
+server:
+  authModes:
+    - server
+  resources:
+    requests: {cpu: 25m, memory: 96Mi}
+    limits: {memory: 256Mi}
+
+# Emissary executor is default; keep its footprint small.
+executor:
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {memory: 128Mi}

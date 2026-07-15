@@ -1,0 +1,91 @@
+# rollback-score: an anomaly was detected. Two steps, in order:
+#   1) abort   — patch the Rollout's status.abort=true. Traffic returns to stable in
+#                seconds. We touch ONLY status, never spec, so Argo CD selfHeal doesn't
+#                fight us. This is the exact patch the argo-rollouts plugin issues.
+#   2) revert  — if HEAD is a promote commit, git-revert it and push, so Argo CD stops
+#                wanting to apply the bad desired state. rollbackWindow on the Rollout
+#                makes this land as an instant promotion back to the good template
+#                instead of re-running the whole canary ladder.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: rollback-score
+  namespace: argo
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  serviceAccountName: workflow-sa
+  entrypoint: rollback
+  arguments:
+    parameters:
+      - {name: reason, value: "unspecified"}
+      - {name: score, value: "0-0"}
+  templates:
+    - name: rollback
+      inputs:
+        parameters:
+          - {name: reason}
+          - {name: score}
+      steps:
+        - - name: abort-rollout
+            template: abort
+            arguments:
+              parameters: [{name: reason, value: "{{inputs.parameters.reason}}"}]
+        - - name: revert-commit
+            template: revert
+            arguments:
+              parameters: [{name: reason, value: "{{inputs.parameters.reason}}"}]
+
+    - name: abort
+      inputs:
+        parameters: [{name: reason}]
+      container:
+        image: bitnami/kubectl:1.31
+        resources:
+          requests: {cpu: 25m, memory: 48Mi}
+          limits: {memory: 128Mi}
+        command: [sh, -c]
+        args:
+          - |
+            echo "ANOMALY: {{inputs.parameters.reason}} -> aborting rollout"
+            kubectl patch rollout scoreboard -n worldcup \
+              --type=merge --subresource=status \
+              -p '{"status":{"abort":true}}'
+            echo "abort=true patched; traffic returning to stable"
+
+    - name: revert
+      inputs:
+        parameters: [{name: reason}]
+      retryStrategy:
+        limit: "4"
+        retryPolicy: Always
+        backoff: {duration: "5s", factor: "2"}
+      script:
+        image: alpine/git:2.45.2
+        env:
+          - name: GH_TOKEN
+            valueFrom: {secretKeyRef: {name: github-creds, key: token}}
+        resources:
+          requests: {cpu: 25m, memory: 48Mi}
+          limits: {memory: 128Mi}
+        command: [sh]
+        source: |
+          set -eu
+          REPO="github.com/cofo-jtorpoco/argo-world.git"
+          git clone -q "https://x-access-token:${GH_TOKEN}@${REPO}" repo
+          cd repo
+          git config user.email "argo-bot@worldcup.local"
+          git config user.name  "argo-rollback-bot"
+          LAST=$(git log -1 --pretty=%s)
+          case "$LAST" in
+            promote:*)
+              echo "reverting bad promote: ${LAST}"
+              git revert --no-edit HEAD
+              git pull -q --rebase origin main || true
+              git push -q origin main
+              echo "reverted; Argo CD will restore the good template"
+              ;;
+            *)
+              echo "HEAD is not a promote (\"${LAST}\"); abort already restored stable, nothing to revert"
+              ;;
+          esac

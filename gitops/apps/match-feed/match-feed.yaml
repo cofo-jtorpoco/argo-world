@@ -1,0 +1,44 @@
+# match-feed wraps worldcup26.ir and serves a normalized /match/current. Default mode is
+# replay so the demo works at any hour; switch MODE=live + MATCH_ID=101/104 for the real
+# semifinal/final. The chaos endpoints drive the rollback path.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: match-feed
+  namespace: worldcup
+  labels: {app: match-feed}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: match-feed}
+  template:
+    metadata:
+      labels: {app: match-feed}
+    spec:
+      containers:
+        - name: match-feed
+          image: ghcr.io/cofo-jtorpoco/argo-world/match-feed:v1
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080}]
+          env:
+            - {name: MODE, value: "replay"}
+            - {name: MATCH_ID, value: "64"}
+            - {name: REPLAY_SECONDS_PER_MINUTE, value: "1.0"}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            initialDelaySeconds: 2
+            periodSeconds: 3
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {memory: 96Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: match-feed
+  namespace: worldcup
+  labels: {app: match-feed}
+spec:
+  selector: {app: match-feed}
+  ports:
+    - {port: 8080, targetPort: 8080}

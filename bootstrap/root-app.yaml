@@ -1,0 +1,24 @@
+# The one Application you apply by hand. It points Argo CD at gitops/root, which holds
+# the child Applications (platform + apps). Everything else flows from git after this.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/cofo-jtorpoco/argo-world.git
+    targetRevision: main
+    path: gitops/root
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

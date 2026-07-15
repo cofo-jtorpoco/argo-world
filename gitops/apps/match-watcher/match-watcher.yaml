@@ -1,0 +1,46 @@
+# match-watcher polls match-feed every 30s, classifies GOAL/ANOMALY/NO_CHANGE, and POSTs
+# events to the Argo Events webhook. Single replica, Recreate: in-memory state is
+# authoritative, and it must never run two loops that double-emit. Uses the match-watcher
+# SA to mirror state into the match-state ConfigMap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: match-state
+  namespace: worldcup
+  # Argo CD would prune keys the watcher adds at runtime; ignore data drift on this CM.
+  annotations:
+    argocd.argoproj.io/compare-options: IgnoreExtraneous
+    argocd.argoproj.io/sync-options: Prune=false
+data:
+  score: "0-0"
+  revision: "0"
+  status: "init"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: match-watcher
+  namespace: worldcup
+  labels: {app: match-watcher}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: match-watcher}
+  template:
+    metadata:
+      labels: {app: match-watcher}
+    spec:
+      serviceAccountName: match-watcher
+      containers:
+        - name: match-watcher
+          image: ghcr.io/cofo-jtorpoco/argo-world/match-watcher:v1
+          imagePullPolicy: IfNotPresent
+          env:
+            - {name: POLL_INTERVAL, value: "30s"}
+            - {name: MATCH_FEED_URL, value: "http://match-feed.worldcup.svc.cluster.local:8080/match/current"}
+            - {name: EVENTSOURCE_URL, value: "http://match-eventsource-svc.argo-events.svc.cluster.local:12000/match"}
+            - {name: STATE_CONFIGMAP, value: "match-state"}
+          resources:
+            requests: {cpu: 10m, memory: 24Mi}
+            limits: {memory: 64Mi}

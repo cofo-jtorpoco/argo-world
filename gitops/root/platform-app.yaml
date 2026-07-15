@@ -1,0 +1,24 @@
+# Platform layer: Argo Events wiring (bus, source, sensors), the Workflow templates,
+# the Rollouts AnalysisTemplate, and the RBAC that lets them all talk to each other.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/cofo-jtorpoco/argo-world.git
+    targetRevision: main
+    path: gitops/platform
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

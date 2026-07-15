@@ -1,0 +1,39 @@
+# Argo CD trimmed for a 7.7Gi local cluster: no dex, no notifications, no
+# applicationset. Insecure server so `kubectl port-forward` reaches the UI over plain
+# HTTP without cert juggling.
+global:
+  # Keep every component modest; kind's kubelet will happily schedule and then OOM.
+  resources:
+    requests: {cpu: 25m, memory: 64Mi}
+    limits: {memory: 256Mi}
+
+configs:
+  params:
+    server.insecure: true
+
+dex:
+  enabled: false
+notifications:
+  enabled: false
+applicationSet:
+  enabled: false
+
+controller:
+  resources:
+    requests: {cpu: 50m, memory: 192Mi}
+    limits: {memory: 512Mi}
+
+repoServer:
+  resources:
+    requests: {cpu: 25m, memory: 128Mi}
+    limits: {memory: 384Mi}
+
+server:
+  resources:
+    requests: {cpu: 25m, memory: 96Mi}
+    limits: {memory: 256Mi}
+
+redis:
+  resources:
+    requests: {cpu: 25m, memory: 64Mi}
+    limits: {memory: 128Mi}

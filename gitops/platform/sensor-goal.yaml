@@ -1,0 +1,57 @@
+# A GOAL event submits promote-score: bump the scoreboard's baked score in git, which
+# makes Argo CD start a canary. Filter is on body.type (^GOAL$ anchored — string
+# filters are REGEX). Payload fields ride in at data.body.* and map to workflow args.
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: on-goal
+  namespace: argo-events
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  template:
+    serviceAccountName: operate-workflow-sa
+  dependencies:
+    - name: match-dep
+      eventSourceName: match
+      eventName: matchevent
+      filters:
+        data:
+          - path: body.type
+            type: string
+            value:
+              - "^GOAL$"
+  triggers:
+    - template:
+        name: promote-score-trigger
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: promote-score-
+                namespace: argo
+              spec:
+                serviceAccountName: workflow-sa
+                workflowTemplateRef:
+                  name: promote-score
+                arguments:
+                  parameters:
+                    - {name: score, value: "0-0"}
+                    - {name: revision, value: "0"}
+                    - {name: home, value: "Home"}
+                    - {name: away, value: "Away"}
+                    - {name: minute, value: "0"}
+          parameters:
+            - src: {dependencyName: match-dep, dataKey: body.score, value: "0-0"}
+              dest: spec.arguments.parameters.0.value
+            - src: {dependencyName: match-dep, dataKey: body.revision, value: "0"}
+              dest: spec.arguments.parameters.1.value
+            - src: {dependencyName: match-dep, dataKey: body.home, value: "Home"}
+              dest: spec.arguments.parameters.2.value
+            - src: {dependencyName: match-dep, dataKey: body.away, value: "Away"}
+              dest: spec.arguments.parameters.3.value
+            - src: {dependencyName: match-dep, dataKey: body.minute, value: "0"}
+              dest: spec.arguments.parameters.4.value

@@ -1,0 +1,9 @@
+# Argo Events controller. The EventBus/EventSource/Sensors themselves are GitOps CRs
+# under gitops/platform, synced by Argo CD — this chart only installs the controller.
+controller:
+  resources:
+    requests: {cpu: 25m, memory: 64Mi}
+    limits: {memory: 192Mi}
+
+# The webhook EventSource pod and Sensor pods are created by the controller from the
+# CRs; their resources are set on those CRs, not here.

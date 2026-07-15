@@ -1,0 +1,95 @@
+# backfill-history: fan out over all 104 World Cup matches to "ingest" the historical
+# record. Shows off the Workflows DAG — one fetch, then a bounded parallel fan-out, then
+# a reduce. parallelism:6 keeps pod pressure sane on a 7.7Gi cluster.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: backfill-history
+  namespace: argo
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  serviceAccountName: workflow-sa
+  entrypoint: main
+  parallelism: 6
+  arguments:
+    parameters:
+      - {name: api-base, value: "https://worldcup26.ir"}
+  templates:
+    - name: main
+      inputs:
+        parameters: [{name: api-base}]
+      dag:
+        tasks:
+          - name: fetch
+            template: fetch
+            arguments:
+              parameters: [{name: api-base, value: "{{inputs.parameters.api-base}}"}]
+          - name: ingest
+            template: ingest
+            depends: fetch
+            withParam: "{{tasks.fetch.outputs.parameters.matches}}"
+            arguments:
+              parameters: [{name: match, value: "{{item}}"}]
+          - name: summary
+            template: summary
+            depends: ingest
+            arguments:
+              parameters:
+                - {name: count, value: "{{tasks.fetch.outputs.parameters.count}}"}
+
+    # Pull the games once and emit a compact "id|home|away|score" array for the fan-out.
+    - name: fetch
+      inputs:
+        parameters: [{name: api-base}]
+      outputs:
+        parameters:
+          - name: matches
+            valueFrom: {path: /tmp/matches.json}
+          - name: count
+            valueFrom: {path: /tmp/count.txt}
+      script:
+        image: alpine:3.20
+        resources:
+          requests: {cpu: 25m, memory: 48Mi}
+          limits: {memory: 128Mi}
+        command: [sh]
+        source: |
+          set -eu
+          apk add --no-cache curl jq >/dev/null 2>&1
+          curl -s "{{inputs.parameters.api-base}}/get/games" > /tmp/raw.json
+          jq -c '[.games[] | (.id + "|" + (.home_team_name_en // "TBD") + "|" +
+                 (.away_team_name_en // "TBD") + "|" +
+                 (.home_score // "0") + "-" + (.away_score // "0"))]' \
+             /tmp/raw.json > /tmp/matches.json
+          jq -r '.games | length' /tmp/raw.json > /tmp/count.txt
+          echo "fetched $(cat /tmp/count.txt) matches"
+
+    # One pod per match. The item is "id|home|away|score" — no jq needed downstream.
+    - name: ingest
+      inputs:
+        parameters: [{name: match}]
+      script:
+        image: alpine:3.20
+        resources:
+          requests: {cpu: 10m, memory: 24Mi}
+          limits: {memory: 64Mi}
+        command: [sh]
+        source: |
+          set -eu
+          IFS='|' read -r id home away score <<EOF
+          {{inputs.parameters.match}}
+          EOF
+          echo "ingested match #${id}: ${home} ${score} ${away}"
+
+    - name: summary
+      inputs:
+        parameters: [{name: count}]
+      script:
+        image: alpine:3.20
+        resources:
+          requests: {cpu: 10m, memory: 24Mi}
+          limits: {memory: 64Mi}
+        command: [sh]
+        source: |
+          echo "backfill complete: {{inputs.parameters.count}} matches ingested"

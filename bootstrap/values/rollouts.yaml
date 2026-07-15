@@ -1,0 +1,12 @@
+# Argo Rollouts controller. Dashboard enabled so `kubectl argo rollouts dashboard`
+# (or a port-forward) shows the canary marching live.
+controller:
+  resources:
+    requests: {cpu: 25m, memory: 96Mi}
+    limits: {memory: 256Mi}
+
+dashboard:
+  enabled: true
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {memory: 128Mi}

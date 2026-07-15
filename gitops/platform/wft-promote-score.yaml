@@ -1,0 +1,81 @@
+# promote-score: a goal happened -> bump the scoreboard's baked score in Git. Argo CD
+# sees the pod-template env change and starts a canary. The score is written into
+# single-line env entries tagged `# promote-field: <key>` in rollout.yaml, so a busybox
+# sed can target each field deterministically without yq.
+#
+# Params arrive as ENV VARS (not interpolated into command position) so a team name with
+# spaces/quotes can't break the shell.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: promote-score
+  namespace: argo
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  serviceAccountName: workflow-sa
+  entrypoint: promote
+  arguments:
+    parameters:
+      - {name: score, value: "0-0"}
+      - {name: revision, value: "0"}
+      - {name: home, value: "Home"}
+      - {name: away, value: "Away"}
+      - {name: minute, value: "0"}
+  templates:
+    - name: promote
+      inputs:
+        parameters:
+          - {name: score}
+          - {name: revision}
+          - {name: home}
+          - {name: away}
+          - {name: minute}
+      retryStrategy:
+        limit: "4"
+        retryPolicy: Always
+        backoff: {duration: "5s", factor: "2"}
+      script:
+        image: alpine/git:2.45.2
+        env:
+          - {name: SCORE, value: "{{inputs.parameters.score}}"}
+          - {name: REVISION, value: "{{inputs.parameters.revision}}"}
+          - {name: HOME, value: "{{inputs.parameters.home}}"}
+          - {name: AWAY, value: "{{inputs.parameters.away}}"}
+          - {name: MINUTE, value: "{{inputs.parameters.minute}}"}
+          - name: GH_TOKEN
+            valueFrom: {secretKeyRef: {name: github-creds, key: token}}
+        resources:
+          requests: {cpu: 25m, memory: 48Mi}
+          limits: {memory: 128Mi}
+        command: [sh]
+        source: |
+          set -eu
+          REPO="github.com/cofo-jtorpoco/argo-world.git"
+          git clone -q "https://x-access-token:${GH_TOKEN}@${REPO}" repo
+          cd repo
+          git config user.email "argo-bot@worldcup.local"
+          git config user.name  "argo-promote-bot"
+          F=gitops/apps/scoreboard/rollout.yaml
+
+          # Replace value:"..." on the line tagged `promote-field: <key>`.
+          setfield() {
+            key="$1"; val="$2"
+            esc=$(printf '%s' "$val" | sed 's/[&#\\]/\\&/g')
+            sed -i "s#\(value: \"\)[^\"]*\(\".*promote-field: ${key}\)#\1${esc}\2#" "$F"
+          }
+          setfield score    "$SCORE"
+          setfield revision "$REVISION"
+          setfield home     "$HOME"
+          setfield away     "$AWAY"
+          setfield minute   "$MINUTE"
+
+          git add "$F"
+          if git diff --cached --quiet; then
+            echo "no change to promote (already at ${SCORE})"; exit 0
+          fi
+          git commit -q -m "promote: ${HOME} ${SCORE} ${AWAY} (rev ${REVISION}, min ${MINUTE})"
+          # Rebase onto any concurrent promote so two goals in one window don't collide.
+          git pull -q --rebase origin main || true
+          git push -q origin main
+          echo "promoted ${HOME} ${SCORE} ${AWAY} rev ${REVISION}"

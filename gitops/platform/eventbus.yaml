@@ -1,0 +1,32 @@
+# JetStream event bus. replicas:1 is the ONLY sub-3 value the reconciler accepts
+# (2 is hard-rejected); the default of 3 won't fit a 7.7Gi cluster. Name must be
+# "default" since the EventSource/Sensors don't set eventBusName.
+apiVersion: argoproj.io/v1alpha1
+kind: EventBus
+metadata:
+  name: default
+  namespace: argo-events
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  jetstream:
+    replicas: 1
+    containerTemplate:
+      resources:
+        requests: {cpu: 50m, memory: 128Mi}
+        limits: {memory: 256Mi}
+    reloaderContainerTemplate:
+      resources:
+        requests: {cpu: 10m, memory: 32Mi}
+        limits: {memory: 64Mi}
+    metricsContainerTemplate:
+      resources:
+        requests: {cpu: 10m, memory: 32Mi}
+        limits: {memory: 64Mi}
+    persistence:
+      storageClassName: standard
+      accessMode: ReadWriteOnce
+      volumeSize: 1Gi
+    streamConfig: |
+      maxAge: 1h
+      maxBytes: 100000000

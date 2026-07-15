@@ -1,0 +1,104 @@
+# The scoreboard Rollout — the visible payoff. Its baked score (env below) is what the
+# promote-score Workflow rewrites in Git; any change to the pod template starts a canary.
+#
+# The env entries are single-line flow mappings tagged `# promote-field: <key>`; the
+# promote workflow's sed targets those markers. DO NOT reformat them to multi-line.
+#
+# replicas:5 makes setWeight:20 land on exactly one pod (weight quantizes to 1/replicas
+# without a traffic router). rollbackWindow lets a git-revert promote instantly back to a
+# recent good template instead of re-running the whole canary ladder.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: scoreboard
+  namespace: worldcup
+  labels: {app: scoreboard}
+spec:
+  replicas: 5
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels: {app: scoreboard}
+  rollbackWindow:
+    revisions: 2
+  strategy:
+    canary:
+      canaryService: scoreboard-canary
+      stableService: scoreboard-stable
+      maxSurge: 1
+      maxUnavailable: 0
+      abortScaleDownDelaySeconds: 30
+      steps:
+        - setWeight: 20
+        - pause: {duration: 20s}
+        - analysis:
+            templates:
+              - templateName: score-consistency
+            args:
+              - name: canary-svc
+                value: scoreboard-canary.worldcup.svc.cluster.local:8080
+        - setWeight: 50
+        - pause: {duration: 20s}
+        - setWeight: 100
+  template:
+    metadata:
+      labels: {app: scoreboard}
+    spec:
+      containers:
+        - name: scoreboard
+          image: ghcr.io/cofo-jtorpoco/argo-world/scoreboard:v1
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080}]
+          env:
+            - {name: MATCH_HOME,     value: "Kick-off"}   # promote-field: home
+            - {name: MATCH_AWAY,     value: "Awaiting"}   # promote-field: away
+            - {name: MATCH_SCORE,    value: "0-0"}        # promote-field: score
+            - {name: MATCH_REVISION, value: "0"}          # promote-field: revision
+            - {name: MATCH_MINUTE,   value: "0"}          # promote-field: minute
+            - {name: MATCH_FEED_URL, value: "http://match-feed.worldcup.svc.cluster.local:8080/match/current"}
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          resources:
+            requests: {cpu: 10m, memory: 24Mi}
+            limits: {memory: 64Mi}
+---
+# Root Service: selects app:scoreboard with NO pod-template-hash, so it spans BOTH the
+# stable and canary ReplicaSets. This is where the 20/80 split actually materializes and
+# what the UI samples via /api/whoami. Port-forward this one.
+apiVersion: v1
+kind: Service
+metadata:
+  name: scoreboard
+  namespace: worldcup
+  labels: {app: scoreboard}
+spec:
+  selector: {app: scoreboard}
+  ports:
+    - {port: 8080, targetPort: 8080}
+---
+# Stable/canary Services get a pod-template-hash injected by the Rollouts controller, so
+# each resolves to only one ReplicaSet. The AnalysisTemplate hits scoreboard-canary.
+apiVersion: v1
+kind: Service
+metadata:
+  name: scoreboard-stable
+  namespace: worldcup
+  labels: {app: scoreboard}
+spec:
+  selector: {app: scoreboard}
+  ports:
+    - {port: 8080, targetPort: 8080}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: scoreboard-canary
+  namespace: worldcup
+  labels: {app: scoreboard}
+spec:
+  selector: {app: scoreboard}
+  ports:
+    - {port: 8080, targetPort: 8080}

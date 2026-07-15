@@ -1,0 +1,5 @@
+# Go build artifacts
+/**/app
+*.test
+# local env overrides
+*.local.env
