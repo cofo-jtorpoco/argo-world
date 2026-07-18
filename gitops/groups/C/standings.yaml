@@ -3,7 +3,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: standings-C
+  name: standings-c
   namespace: worldcup
   labels: {app: standings, group: "C"}
 data:
