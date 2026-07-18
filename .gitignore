@@ -8,3 +8,6 @@
 /src/*/scoreboard
 /src/*/match-feed
 /src/*/match-watcher
+
+# local port-forward logs
+.pf-logs/

@@ -126,6 +126,9 @@ ejecutar, abortar Rollouts y escribir el ConfigMap):
   vez de calcularlo dentro de un servicio, un `CronWorkflow` dispara una vez por minuto e
   incrementa un contador en el ConfigMap `match-clock`: **la programación *es* el mecanismo**.
   El scoreboard lo lee y nunca lo calcula. Resetea al cambiar de partido o si no está `live`.
+  Y se **ancla a datos reales**: los `scorers` sí traen el minuto de cada gol (`"Azri Knsa
+  18'"`), así que el último gol actúa de suelo y cada gol re-sincroniza el reloj. Sin ese
+  ancla, un contador que arranca tarde se queda tarde el resto del partido.
 - **`fulltime-archive`** — archiva el resultado en `results/` y demuestra un **`onExit`**
   (exit handler), que corre tanto si el archivado va bien como si falla.
 
