@@ -39,17 +39,17 @@ type Match struct {
 // rawGame mirrors the worldcup26.ir /get/games element. Every field is a string in
 // the source, including scores and the literal "null".
 type rawGame struct {
-	ID           string `json:"id"`
-	HomeName     string `json:"home_team_name_en"`
-	AwayName     string `json:"away_team_name_en"`
-	HomeScore    string `json:"home_score"`
-	AwayScore    string `json:"away_score"`
-	HomeScorers  string `json:"home_scorers"`
-	AwayScorers  string `json:"away_scorers"`
-	Finished     string `json:"finished"`
-	TimeElapsed  string `json:"time_elapsed"`
-	LocalDate    string `json:"local_date"`
-	Type         string `json:"type"`
+	ID          string `json:"id"`
+	HomeName    string `json:"home_team_name_en"`
+	AwayName    string `json:"away_team_name_en"`
+	HomeScore   string `json:"home_score"`
+	AwayScore   string `json:"away_score"`
+	HomeScorers string `json:"home_scorers"`
+	AwayScorers string `json:"away_scorers"`
+	Finished    string `json:"finished"`
+	TimeElapsed string `json:"time_elapsed"`
+	LocalDate   string `json:"local_date"`
+	Type        string `json:"type"`
 }
 
 type gamesResponse struct {
@@ -57,10 +57,10 @@ type gamesResponse struct {
 }
 
 var (
-	apiBase     = env("API_BASE", "https://worldcup26.ir")
-	mode        = env("MODE", "replay")
-	matchID     = env("MATCH_ID", "64")
-	listenAddr  = env("LISTEN_ADDR", ":8080")
+	apiBase    = env("API_BASE", "https://worldcup26.ir")
+	mode       = env("MODE", "replay")
+	matchID    = env("MATCH_ID", "64")
+	listenAddr = env("LISTEN_ADDR", ":8080")
 	// secondsPerMinute compresses match time: how many real seconds equal one match
 	// minute in replay mode. 1s/min plays a 90' match in ~90s, spacing goals far
 	// enough apart that the 30s watcher sees each one distinctly.
@@ -71,8 +71,8 @@ var (
 
 // chaos is the on-demand overlay. Guarded by mu.
 type chaosState struct {
-	mu         sync.Mutex
-	extraGoals int  // added to home score, sticky (forces GOAL events)
+	mu          sync.Mutex
+	extraGoals  int  // added to home score, sticky (forces GOAL events)
 	corruptNext bool // corrupt the very next read (drives an ANOMALY)
 }
 
@@ -240,7 +240,55 @@ func handleChaosReset(w http.ResponseWriter, r *http.Request) {
 
 var httpc = &http.Client{Timeout: 12 * time.Second}
 
+// Upstream response cache. Every /match/current used to hit worldcup26.ir directly, and
+// the scoreboard page polls /api/live every 1.5s from EVERY open browser tab — three tabs
+// was already ~120 req/min, which is exactly the documented public rate limit (120/60s).
+// Blowing it returns 429 and the feed goes blind mid-demo.
+//
+// The TTL costs nothing in freshness: the upstream caches its own responses for 30s, so a
+// shorter TTL here would only re-fetch identical bytes. All consumers now collapse onto a
+// handful of upstream calls per minute no matter how many tabs are open.
+var (
+	feedMu     sync.Mutex
+	feedCache  []rawGame
+	feedExpiry time.Time
+	feedTTL    = envSeconds("UPSTREAM_TTL_SECONDS", 15*time.Second)
+)
+
+func fetchGames() ([]rawGame, error) {
+	feedMu.Lock()
+	defer feedMu.Unlock()
+	if time.Now().Before(feedExpiry) && feedCache != nil {
+		return feedCache, nil
+	}
+	games, err := fetchGamesUncached()
+	if err != nil {
+		// Serve stale rather than nothing: a blip upstream (or a 429) must not black out
+		// the board mid-match. Only fail when there is nothing cached at all.
+		if feedCache != nil {
+			log.Printf("upstream fetch failed (%v), serving cached data", err)
+			return feedCache, nil
+		}
+		return nil, err
+	}
+	feedCache, feedExpiry = games, time.Now().Add(feedTTL)
+	return games, nil
+}
+
 func fetchGame(id string) (*rawGame, error) {
+	games, err := fetchGames()
+	if err != nil {
+		return nil, err
+	}
+	for i := range games {
+		if games[i].ID == id {
+			return &games[i], nil
+		}
+	}
+	return nil, fmt.Errorf("match id %s not found in source", id)
+}
+
+func fetchGamesUncached() ([]rawGame, error) {
 	resp, err := httpc.Get(apiBase + "/get/games")
 	if err != nil {
 		return nil, fmt.Errorf("fetch games: %w", err)
@@ -253,12 +301,10 @@ func fetchGame(id string) (*rawGame, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&gr); err != nil {
 		return nil, fmt.Errorf("decode games: %w", err)
 	}
-	for i := range gr.Games {
-		if gr.Games[i].ID == id {
-			return &gr.Games[i], nil
-		}
+	if len(gr.Games) == 0 {
+		return nil, fmt.Errorf("source returned no games")
 	}
-	return nil, fmt.Errorf("match id %s not found in source", id)
+	return gr.Games, nil
 }
 
 // helpers
@@ -308,6 +354,17 @@ func nowRFC() string { return time.Now().UTC().Format(time.RFC3339) }
 func env(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
+	}
+	return def
+}
+
+// envSeconds reads a plain integer count of seconds, so the knob is tunable from the
+// Deployment env without a duration parser.
+func envSeconds(k string, def time.Duration) time.Duration {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return time.Duration(n) * time.Second
+		}
 	}
 	return def
 }
