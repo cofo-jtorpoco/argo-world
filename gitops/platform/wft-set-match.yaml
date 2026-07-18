@@ -74,11 +74,39 @@ spec:
           setfield mode  "$MODE"
           setfield match "$MATCH"
 
-          git add "$F"
+          # Reset the scoreboard to the new match's baseline IN THE SAME COMMIT. Without
+          # this the board keeps the previous match's baked score while the feed serves a
+          # new one, /consistency reports a divergence, and the AnalysisTemplate aborts
+          # every subsequent canary — the rollout sits Degraded until someone promotes.
+          # The teams come from the API so the board is labelled before the first goal.
+          R=gitops/apps/scoreboard/rollout.yaml
+          apk add --no-cache -q curl jq 2>/dev/null || true
+          HOME_T=""; AWAY_T=""
+          if curl -sS --max-time 20 "https://worldcup26.ir/get/games" -o /tmp/g.json 2>/dev/null; then
+            HOME_T=$(jq -r --arg id "$MATCH" '.games[] | select(.id==$id) | .home_team_name_en' /tmp/g.json 2>/dev/null | head -1)
+            AWAY_T=$(jq -r --arg id "$MATCH" '.games[] | select(.id==$id) | .away_team_name_en' /tmp/g.json 2>/dev/null | head -1)
+          fi
+          # Plain `if`, not `[ a ] || [ b ] && x=y`: that construct returns non-zero on the
+          # happy path and `set -e` would kill the workflow right here.
+          if [ -z "$HOME_T" ] || [ "$HOME_T" = "null" ]; then HOME_T="Home"; fi
+          if [ -z "$AWAY_T" ] || [ "$AWAY_T" = "null" ]; then AWAY_T="Away"; fi
+
+          promotefield() {
+            key="$1"; val="$2"
+            esc=$(printf '%s' "$val" | sed 's/[&#\\]/\\&/g')
+            sed -i "s#\(value: \"\)[^\"]*\(\".*promote-field: ${key}\)#\1${esc}\2#" "$R"
+          }
+          promotefield home     "$HOME_T"
+          promotefield away     "$AWAY_T"
+          promotefield score    "0-0"
+          promotefield revision "0"
+          promotefield minute   "0"
+
+          git add "$F" "$R"
           if git diff --cached --quiet; then
             echo "feed already on ${MODE} match ${MATCH}"; exit 0
           fi
-          git commit -q -m "set-match: ${MODE} match ${MATCH}"
+          git commit -q -m "set-match: ${MODE} match ${MATCH} (${HOME_T} vs ${AWAY_T})"
           git pull -q --rebase origin main || true
           git push -q origin main
           echo "feed switched to ${MODE} match ${MATCH}"
