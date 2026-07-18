@@ -24,7 +24,11 @@ spec:
           - path: gitops/groups/*
   template:
     metadata:
-      name: 'group-{{.path.basename}}'
+      # `| lower` is load-bearing: the group directories are uppercase (A..L) and an
+      # Application name must be an RFC 1123 subdomain, so `group-A` is rejected outright.
+      # The ApplicationSet reports "Successfully generated parameters" and then fails on
+      # every single Application — the error lives only in the appset's status conditions.
+      name: 'group-{{.path.basename | lower}}'
       labels:
         argo-world/group: '{{.path.basename}}'
     spec:

@@ -55,9 +55,13 @@ notifications:
           method: GET
 
 controller:
+  # 512Mi OOM-killed the controller (exit 137, CrashLoopBackOff) once the repo grew to ~15
+  # Applications' worth of resources plus an ApplicationSet: it died mid-sync, so apps sat
+  # OutOfSync with the operation stuck in Running and no error anywhere on the Application.
+  # The node allocates ~7.9Gi against ~1.7Gi requested, so this headroom is free.
   resources:
-    requests: {cpu: 50m, memory: 192Mi}
-    limits: {memory: 512Mi}
+    requests: {cpu: 50m, memory: 384Mi}
+    limits: {memory: 1536Mi}
 
 repoServer:
   resources:
