@@ -73,7 +73,7 @@ spec:
               last_goal=$(printf '%s' "$games" | jq -r --arg id "$mid" '
                 [ .games[] | select(.id==$id) | (.home_scorers, .away_scorers) ]
                 | map(select(. != null and . != "null")) | join(" ")
-                | [ scan("([0-9]{1,3})[^0-9]*['’]") | .[0] | tonumber ]
+                | [ scan("[0-9]{1,3}") | tonumber ]
                 | max // 0' 2>/dev/null || echo 0)
               case "$last_goal" in ''|*[!0-9]*) last_goal=0 ;; esac
               if [ "$last_goal" -gt "$minute" ]; then
