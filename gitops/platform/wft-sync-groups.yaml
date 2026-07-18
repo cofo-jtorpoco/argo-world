@@ -58,6 +58,10 @@ spec:
           # One directory per group => one Application per group, via the ApplicationSet's
           # directory generator. The ConfigMap carries the standings the UI reads.
           for g in $(jq -r '.groups[].name' /tmp/groups.json); do
+            # The group letter is uppercase upstream, but a resource name must be an RFC
+            # 1123 subdomain — `standings-A` is rejected by the API server. The directory
+            # keeps the readable uppercase; only the object name is lowercased.
+            gl=$(printf '%s' "$g" | tr 'A-Z' 'a-z')
             mkdir -p "gitops/groups/${g}"
             table=$(jq -c --arg g "$g" '.groups[] | select(.name==$g) | .teams' /tmp/groups.json)
             cat > "gitops/groups/${g}/standings.yaml" <<EOF
@@ -66,7 +70,7 @@ spec:
           apiVersion: v1
           kind: ConfigMap
           metadata:
-            name: standings-${g}
+            name: standings-${gl}
             namespace: worldcup
             labels: {app: standings, group: "${g}"}
           data:
