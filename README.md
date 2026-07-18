@@ -60,7 +60,7 @@ vive en git** y que Argo CD sincroniza.
 |---|---|---|---|
 | **Argo CD** | 10.1.3 · v3.4.5 | `argocd` | `Application` ×3, **`ApplicationSet`**, **Notifications** |
 | **Argo Events** | 2.4.23 · v1.9.11 | `argo-events` | `EventBus`, `EventSource`, `Sensor` ×3 |
-| **Argo Workflows** | 1.0.19 · v4.0.7 | `argo` | `WorkflowTemplate` ×6, **`CronWorkflow` ×2** |
+| **Argo Workflows** | 1.0.19 · v4.0.7 | `argo` | `WorkflowTemplate` ×7, **`CronWorkflow` ×3** |
 | **Argo Rollouts** | 2.41.0 · v1.9.0 | `worldcup` | `Rollout` ×2 (canary + **blue-green**), `AnalysisTemplate`, **`Experiment`** |
 
 ### Argo CD — el que reconcilia
@@ -121,11 +121,16 @@ ejecutar, abortar Rollouts y escribir el ConfigMap):
   humano pulse Resume en la UI. Es la única capacidad que no se puede fingir con capturas.
 - **`sync-groups`** — escribe `gitops/groups/A..L/` desde `/get/groups`. Valida el payload
   **antes** de clonar: un 429 commitearía una clasificación vacía sobre los datos buenos.
+- **`tick-minute`** — **el reloj del partido**. La API manda `time_elapsed: "live"` durante el
+  juego (una palabra, no un número), así que el minuto sencillamente no está en la fuente. En
+  vez de calcularlo dentro de un servicio, un `CronWorkflow` dispara una vez por minuto e
+  incrementa un contador en el ConfigMap `match-clock`: **la programación *es* el mecanismo**.
+  El scoreboard lo lee y nunca lo calcula. Resetea al cambiar de partido o si no está `live`.
 - **`fulltime-archive`** — archiva el resultado en `results/` y demuestra un **`onExit`**
   (exit handler), que corre tanto si el archivado va bien como si falla.
 
-Dos **`CronWorkflow`** de 1 minuto (el suelo de la primitiva) mueven el sondeo lento a
-infraestructura Argo. Los goles **no** pasan por ahí: siguen en el bucle de 30s de
+Tres **`CronWorkflow`** de 1 minuto (el suelo de la primitiva) mueven el sondeo lento —y el
+reloj del partido— a infraestructura Argo. Los goles **no** pasan por ahí: siguen en el bucle de 30s de
 `match-watcher`, porque un gol que dispara un canary no puede esperar un minuto, y cada tick de
 `CronWorkflow` cuesta un pod.
 
@@ -230,6 +235,8 @@ Verificado en el clúster, no solo validado:
 | Cadena de señales completa | ✅ `match-signals` → Sensor → `fulltime-archive` → commit `result:` |
 | Rollout blue-green desplegado | ✅ `standings` 2/2 |
 | Clasificación en pantalla | ✅ `/api/standings` sirve los 12 grupos con nombres y puntos |
+| Gol REAL del Mundial extremo a extremo | ✅ `France 0-1 England` → watcher → Events → `promote-score` → commit → Argo CD → canary |
+| Reloj por CronWorkflow | ✅ `clock: match 103 status=live minute=1`, leído por la web |
 | Rollout tras cambio de partido | ✅ `Healthy`, `/consistency` → `consistent: true` |
 
 Los `CronWorkflow` corren cada minuto, así que el repo acumula commits `standings:` y `result:`
