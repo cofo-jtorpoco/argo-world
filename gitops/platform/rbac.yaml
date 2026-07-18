@@ -135,6 +135,11 @@ subjects:
   - kind: ServiceAccount
     name: match-watcher
     namespace: worldcup
+  # tick-minute (a Workflow, so workflow-sa in argo) keeps the match clock in the
+  # match-clock ConfigMap and needs the same write access, cross-namespace.
+  - kind: ServiceAccount
+    name: workflow-sa
+    namespace: argo
 ---
 # The on-signals Sensor uses a `k8s` trigger to create a Rollouts Experiment on a penalty.
 # That resource lands in worldcup, but the Sensor pod runs as operate-workflow-sa in

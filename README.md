@@ -31,13 +31,15 @@ rutas `/get/*`. Cuatro endpoints vivos:
 
 | Endpoint | Qué da | Se usa hoy |
 |---|---|---|
-| `/get/games` | 104 partidos: marcador, `home_scorers`/`away_scorers`, `time_elapsed`, `finished`, `group`, `matchday` | ✅ `match-feed` |
-| `/get/groups` | clasificación viva: `pts, mp, w, d, l, gf, ga` | ❌ |
-| `/get/teams` | 48 selecciones + URL de bandera (flagcdn) | ❌ |
+| `/get/games` | 104 partidos: marcador, `home_scorers`/`away_scorers`, `time_elapsed`, `finished`, `group`, `matchday` | ✅ `match-feed`, `match-signals` |
+| `/get/groups` | clasificación viva: `pts, mp, w, d, l, gf, ga` | ✅ `sync-groups` |
+| `/get/teams` | 48 selecciones + URL de bandera (flagcdn) | ✅ `sync-groups` (join de nombres) |
 | `/get/stadiums` | 16 sedes, ciudad, capacidad | ❌ |
 
-**Límites**: 120 req/60s en `/get/*`, respuestas cacheadas 30s upstream. El sondeo actual (30s)
-gasta el ~1.7% del presupuesto, así que hay margen de sobra para sondear más endpoints.
+**Límites**: 120 req/60s en `/get/*`, respuestas cacheadas 30s upstream. `match-feed` cachea
+15s, así que el consumo total ronda **7 req/min (6% del límite)** *sin importar cuántas pestañas
+del marcador haya abiertas*. Sin esa caché, tres pestañas bastaban para rozar el límite: la
+página sondea `/api/live` cada 1.5s y cada request iba a la API.
 
 **No existen** eventos de juego: córners, tarjetas, faltas, cambios y alineaciones dan 404
 (`/get/events`, `/get/players`). El detalle más fino disponible es el marcador de penalti en los

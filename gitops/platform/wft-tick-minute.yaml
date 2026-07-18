@@ -1,0 +1,72 @@
+# tick-minute: THE MATCH CLOCK, kept by the architecture rather than computed in code.
+#
+# The upstream sends time_elapsed:"live" during play — a word, not a number — so the minute
+# is genuinely absent from the API. Instead of deriving it inside a service, a CronWorkflow
+# fires once per minute and increments a counter in the match-clock ConfigMap. The clock
+# advances because Argo Workflows ticks, and the scoreboard just reads it.
+#
+# Reset rules matter as much as the increment: a new match or a match that is not live must
+# reset to 0, or the counter keeps climbing across fixtures and shows minute 300.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: tick-minute
+  namespace: argo
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  serviceAccountName: workflow-sa
+  entrypoint: tick
+  arguments:
+    parameters:
+      - {name: feed-url, value: "http://match-feed.worldcup.svc.cluster.local:8080/match/current"}
+      - {name: namespace, value: "worldcup"}
+      - {name: configmap, value: "match-clock"}
+  templates:
+    - name: tick
+      inputs:
+        parameters:
+          - {name: feed-url}
+          - {name: namespace}
+          - {name: configmap}
+      script:
+        image: alpine/k8s:1.31.2
+        env:
+          - {name: FEED_URL, value: "{{inputs.parameters.feed-url}}"}
+          - {name: NS, value: "{{inputs.parameters.namespace}}"}
+          - {name: CM, value: "{{inputs.parameters.configmap}}"}
+        resources:
+          requests: {cpu: 25m, memory: 64Mi}
+          limits: {memory: 192Mi}
+        command: [sh]
+        source: |
+          set -eu
+
+          m=$(curl -sS --max-time 12 "$FEED_URL")
+          mid=$(printf '%s' "$m" | jq -r '.match_id')
+          status=$(printf '%s' "$m" | jq -r '.status')
+
+          # Previous tick's state. Missing ConfigMap on the very first run is expected.
+          prev_mid=$(kubectl -n "$NS" get cm "$CM" -o jsonpath='{.data.match_id}' 2>/dev/null || echo "")
+          prev_min=$(kubectl -n "$NS" get cm "$CM" -o jsonpath='{.data.minute}' 2>/dev/null || echo "")
+          case "$prev_min" in ''|*[!0-9]*) prev_min=0 ;; esac
+
+          if [ "$status" != "live" ]; then
+            # Before kick-off and after the whistle the clock sits at 0 rather than drifting.
+            minute=0
+          elif [ "$mid" != "$prev_mid" ]; then
+            # New fixture: restart the clock instead of inheriting the old match's minute.
+            minute=1
+          else
+            minute=$((prev_min + 1))
+            # Stoppage time is real, 300' is not. Clamp so a stuck feed can't run away.
+            [ "$minute" -gt 120 ] && minute=120 || true
+          fi
+
+          kubectl -n "$NS" create configmap "$CM" \
+            --from-literal=match_id="$mid" \
+            --from-literal=minute="$minute" \
+            --from-literal=status="$status" \
+            --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+          echo "clock: match ${mid} status=${status} minute=${minute} (prev ${prev_min})"

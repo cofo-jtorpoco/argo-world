@@ -1,0 +1,24 @@
+# The match clock. One tick per minute IS the minute — the schedule is the mechanism, not
+# a trigger for a calculation. 1 min is also the CronWorkflow floor, which happens to be
+# exactly the resolution a match clock needs.
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: tick-minute
+  namespace: argo
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  schedules: ["* * * * *"]
+  timezone: "UTC"
+  # A tick that overruns must never let a second one double-increment the clock.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 20
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  workflowSpec:
+    serviceAccountName: workflow-sa
+    ttlStrategy:
+      secondsAfterCompletion: 120
+    workflowTemplateRef:
+      name: tick-minute

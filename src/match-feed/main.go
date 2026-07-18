@@ -126,6 +126,10 @@ func current() (*Match, error) {
 	case strings.EqualFold(g.TimeElapsed, "notstarted"):
 		status = "notstarted"
 	}
+	// The upstream sends time_elapsed:"live" during play, so the minute is absent from the
+	// API. It is NOT computed here on purpose: the match clock is advanced by the
+	// tick-minute CronWorkflow into the match-clock ConfigMap, and the scoreboard reads it
+	// from there. The architecture keeps the clock, not this process.
 	minute := parseMinute(g.TimeElapsed)
 	return &Match{
 		MatchID: g.ID, Home: home, Away: away,
@@ -307,6 +311,35 @@ func fetchGamesUncached() ([]rawGame, error) {
 	return gr.Games, nil
 }
 
+// minutesSinceKickoff derives the running match minute from local_date, because the
+// upstream sends time_elapsed:"live" during play instead of a number — the minute simply
+// is not in the API while the match is on.
+//
+// local_date is venue-local ("07/18/2026 17:00"), and the venues span several US zones, so
+// the offset is a knob: MATCH_TZ_OFFSET_HOURS, defaulting to -4 (US Eastern in summer,
+// which covers the Miami/New York venues). Wrong offset only skews the displayed minute.
+func minutesSinceKickoff(localDate string) int {
+	if strings.TrimSpace(localDate) == "" {
+		return 0
+	}
+	offset := envInt("MATCH_TZ_OFFSET_HOURS", -4)
+	zone := time.FixedZone("venue", offset*3600)
+	t, err := time.ParseInLocation("01/02/2006 15:04", strings.TrimSpace(localDate), zone)
+	if err != nil {
+		return 0
+	}
+	mins := int(time.Since(t).Minutes())
+	if mins < 0 {
+		return 0
+	}
+	// Clamp to a plausible match length: stoppage time exists, 300' does not. Prevents a
+	// bad offset or a stale fixture from rendering an absurd minute on screen.
+	if mins > 120 {
+		return 120
+	}
+	return mins
+}
+
 // helpers
 
 func cleanTeam(s string) string {
@@ -364,6 +397,16 @@ func envSeconds(k string, def time.Duration) time.Duration {
 	if v := os.Getenv(k); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return time.Duration(n) * time.Second
+		}
+	}
+	return def
+}
+
+// envInt allows a negative value (the TZ offset), unlike envSeconds.
+func envInt(k string, def int) int {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
 		}
 	}
 	return def

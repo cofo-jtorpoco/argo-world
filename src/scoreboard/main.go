@@ -89,53 +89,14 @@ func standings() ([]groupTable, error) {
 		return stCache, nil
 	}
 
-	host := os.Getenv("KUBERNETES_SERVICE_HOST")
-	port := os.Getenv("KUBERNETES_SERVICE_PORT")
-	if host == "" || port == "" {
-		return nil, fmt.Errorf("not running in-cluster")
-	}
-	const sa = "/var/run/secrets/kubernetes.io/serviceaccount"
-	token, err := os.ReadFile(sa + "/token")
-	if err != nil {
-		return nil, fmt.Errorf("read token: %w", err)
-	}
-	ca, err := os.ReadFile(sa + "/ca.crt")
-	if err != nil {
-		return nil, fmt.Errorf("read ca: %w", err)
-	}
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(ca) {
-		return nil, fmt.Errorf("bad ca bundle")
-	}
-
-	endpoint := fmt.Sprintf("https://%s:%s/api/v1/namespaces/%s/configmaps?labelSelector=%s",
-		host, port, url.PathEscape(k8sNS), url.QueryEscape("app=standings"))
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
-
-	cl := &http.Client{
-		Timeout:   6 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}},
-	}
-	resp, err := cl.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
-		return nil, fmt.Errorf("api server %d: %s", resp.StatusCode, body)
-	}
-
 	var list struct {
 		Items []struct {
 			Data map[string]string `json:"data"`
 		} `json:"items"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+	path := "/api/v1/namespaces/" + url.PathEscape(k8sNS) + "/configmaps?labelSelector=" +
+		url.QueryEscape("app=standings")
+	if err := k8sGet(path, &list); err != nil {
 		return nil, err
 	}
 
@@ -157,6 +118,49 @@ func standings() ([]groupTable, error) {
 
 	stCache, stExpiry = out, time.Now().Add(15*time.Second)
 	return out, nil
+}
+
+// k8sGet does an authenticated GET against the in-cluster API server and decodes the JSON
+// into out. Uses the projected ServiceAccount token so the image stays distroless and
+// go.mod stays empty — client-go would be the only dependency in the whole binary.
+func k8sGet(path string, out any) error {
+	host := os.Getenv("KUBERNETES_SERVICE_HOST")
+	port := os.Getenv("KUBERNETES_SERVICE_PORT")
+	if host == "" || port == "" {
+		return fmt.Errorf("not running in-cluster")
+	}
+	const sa = "/var/run/secrets/kubernetes.io/serviceaccount"
+	token, err := os.ReadFile(sa + "/token")
+	if err != nil {
+		return fmt.Errorf("read token: %w", err)
+	}
+	ca, err := os.ReadFile(sa + "/ca.crt")
+	if err != nil {
+		return fmt.Errorf("read ca: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(ca) {
+		return fmt.Errorf("bad ca bundle")
+	}
+	req, err := http.NewRequest(http.MethodGet, "https://"+host+":"+port+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+	cl := &http.Client{
+		Timeout:   6 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}},
+	}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
+		return fmt.Errorf("api server %d: %s", resp.StatusCode, body)
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
 }
 
 func sortGroups(g []groupTable) {
@@ -182,7 +186,44 @@ func handleLive(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	// The match minute is NOT computed here. It is advanced once per minute by the
+	// tick-minute CronWorkflow into the match-clock ConfigMap; this only reads it. If the
+	// clock is unavailable, fall back to whatever the feed reported rather than blanking.
+	if min, ok := matchClockMinute(); ok {
+		live.Minute = min
+	}
 	writeJSON(w, live)
+}
+
+// matchClockMinute reads the minute the tick-minute CronWorkflow maintains. Cached briefly
+// because the page polls far faster than the clock can possibly change.
+var (
+	clkMu     sync.Mutex
+	clkVal    int
+	clkOK     bool
+	clkExpiry time.Time
+)
+
+func matchClockMinute() (int, bool) {
+	clkMu.Lock()
+	defer clkMu.Unlock()
+	if time.Now().Before(clkExpiry) {
+		return clkVal, clkOK
+	}
+	var cm struct {
+		Data map[string]string `json:"data"`
+	}
+	if err := k8sGet("/api/v1/namespaces/"+url.PathEscape(k8sNS)+"/configmaps/match-clock", &cm); err != nil {
+		clkOK, clkExpiry = false, time.Now().Add(10*time.Second)
+		return 0, false
+	}
+	n, err := strconv.Atoi(cm.Data["minute"])
+	if err != nil {
+		clkOK, clkExpiry = false, time.Now().Add(10*time.Second)
+		return 0, false
+	}
+	clkVal, clkOK, clkExpiry = n, true, time.Now().Add(5*time.Second)
+	return clkVal, clkOK
 }
 
 // handleConsistency compares the baked score against the live source. A legit promote
