@@ -20,6 +20,7 @@ spec:
   arguments:
     parameters:
       - {name: feed-url, value: "http://match-feed.worldcup.svc.cluster.local:8080/match/current"}
+      - {name: api-base, value: "https://worldcup26.ir"}
       - {name: namespace, value: "worldcup"}
       - {name: configmap, value: "match-clock"}
   templates:
@@ -27,12 +28,14 @@ spec:
       inputs:
         parameters:
           - {name: feed-url}
+          - {name: api-base}
           - {name: namespace}
           - {name: configmap}
       script:
         image: alpine/k8s:1.31.2
         env:
           - {name: FEED_URL, value: "{{inputs.parameters.feed-url}}"}
+          - {name: API_BASE, value: "{{inputs.parameters.api-base}}"}
           - {name: NS, value: "{{inputs.parameters.namespace}}"}
           - {name: CM, value: "{{inputs.parameters.configmap}}"}
         resources:
@@ -59,6 +62,26 @@ spec:
             minute=1
           else
             minute=$((prev_min + 1))
+
+            # Anchor to reality. time_elapsed is the literal word "live" during play, so the
+            # running minute is absent from the API — but the scorer strings carry the minute
+            # of every goal ("Azri Knsa 18'"). The latest goal is a hard floor: the match is
+            # at least that far along. Without it a counter that starts late stays late all
+            # match; with it, every goal re-syncs the clock to real data.
+            games=$(curl -sS --max-time 15 "${API_BASE}/get/games" 2>/dev/null || echo "")
+            if [ -n "$games" ]; then
+              last_goal=$(printf '%s' "$games" | jq -r --arg id "$mid" '
+                [ .games[] | select(.id==$id) | (.home_scorers, .away_scorers) ]
+                | map(select(. != null and . != "null")) | join(" ")
+                | [ scan("([0-9]{1,3})[^0-9]*['’]") | .[0] | tonumber ]
+                | max // 0' 2>/dev/null || echo 0)
+              case "$last_goal" in ''|*[!0-9]*) last_goal=0 ;; esac
+              if [ "$last_goal" -gt "$minute" ]; then
+                echo "anchoring clock to last goal at ${last_goal}' (counter was ${minute})"
+                minute=$last_goal
+              fi
+            fi
+
             # Stoppage time is real, 300' is not. Clamp so a stuck feed can't run away.
             [ "$minute" -gt 120 ] && minute=120 || true
           fi
