@@ -214,18 +214,18 @@ Dos detalles de resiliencia que no se ven en el diagrama:
 
 ## Estado de verificación
 
-Todo lo de arriba está **escrito y validado contra los CRD del clúster** (`kubectl apply
---dry-run=server`, 13 manifiestos). Lo que **no** está probado de extremo a extremo es la
-ejecución: Argo CD sincroniza desde GitHub, así que nada corre hasta que estos cambios estén en
-`main` remoto y se re-ejecute `make bootstrap` (ApplicationSet y Notifications son Helm, no los
-sincroniza Argo CD).
+Verificado en el clúster, no solo validado:
 
-Pendiente de comprobar en vivo, en este orden:
+| Comprobación | Resultado |
+|---|---|
+| `make demo-live MATCH=103` cambia el feed | ✅ `MATCH_ID=103`, sirve `France 0-0 England`, `source: live` |
+| `CronWorkflow` tickea y commitea | ✅ `standings synced` → `gitops/groups/A..L/` en git |
+| ApplicationSet genera las Applications | ✅ 12/12 `Synced` + `Healthy`, 12 ConfigMaps |
+| Cadena de señales completa | ✅ `match-signals` → Sensor → `fulltime-archive` → commit `result:` |
+| Rollout blue-green desplegado | ✅ `standings` 2/2 |
 
-1. `make demo-live MATCH=103` cambia el feed de verdad (era el bug original).
-2. El `CronWorkflow` tickea y `sync-groups` commitea `gitops/groups/A..L/`.
-3. El ApplicationSet genera las 12 Applications a partir de esos directorios.
-4. Un penalti crea el `Experiment`; el descanso deja el workflow esperando aprobación.
+Los `CronWorkflow` corren cada minuto, así que el repo acumula commits `standings:` y `result:`
+por sí solo — son la evidencia durable de que el sistema está vivo.
 
 Las decisiones no obvias y las minas del stack (filtro `body.type`, `jetstream.version` fijada,
 `replicas: 1` en el `streamConfig` además de en el bus, imagen `alpine/k8s` para el abort,

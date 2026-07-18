@@ -58,8 +58,32 @@ respétalos:
 4. **Imágenes de kubectl**: `bitnami/kubectl:<tag>` fue retirado en 2025 (`not found`);
    `rancher/kubectl` **no trae shell** (`sh not found`). Usar `alpine/k8s` (shell +
    kubectl). — `wft-rollback-score.yaml`
-5. **`CronWorkflow` no baja de 1 min** y cada tick lanza un pod → el sondeo lo hace
-   `match-watcher` (Deployment con bucle), no un CronWorkflow.
+5. **`CronWorkflow` no baja de 1 min** y cada tick lanza un pod → el sondeo de goles lo hace
+   `match-watcher` (Deployment con bucle). Los CronWorkflow que sí existen llevan solo las
+   señales lentas (clasificación, descanso, final).
+6. **`CronWorkflow.spec.schedule` no existe en Workflows v4**: es `schedules`, una lista. La
+   API lo rechaza con `unknown field`. — `cronwf-*.yaml`
+7. **Nombres RFC 1123**: los grupos del torneo son mayúsculas (`A`..`L`) y tanto el nombre de
+   Application (`group-A`) como el del ConfigMap (`standings-A`) son inválidos. Peor: el
+   ApplicationSet informa *"Successfully generated parameters"* y **luego** falla en cada
+   Application, y el error solo aparece en `status.conditions` del appset — ninguna Application
+   lo muestra. Hay que bajar a minúsculas (`| lower` en la plantilla, `tr A-Z a-z` en el
+   Workflow). — `appset-groups.yaml`, `wft-sync-groups.yaml`
+8. **El CRD `applicationsets` se instala aunque el controlador esté desactivado.** Un
+   ApplicationSet se aplica "con éxito" y no hace nada. Verifica que el Deployment
+   `argocd-applicationset-controller` exista. — `bootstrap/values/argocd.yaml`
+9. **512Mi mataban al `application-controller`** (OOMKilled, exit 137) al crecer el repo: las
+   Applications se quedaban `OutOfSync` con la operación en `Running` eterno y **sin error en
+   ninguna parte**. Si algo se sincroniza "para siempre", mira `kubectl -n argocd get pods`
+   antes que los manifiestos. Subido a 1536Mi.
+
+## Cómo se rompe este stack
+
+El patrón de los nueve fallos: **el error nunca está donde miras**. Un sensor que no dispara, un
+ApplicationSet que genera cero, una app que sincroniza eternamente — ninguno reporta el fallo en
+el objeto que estás inspeccionando. Antes de tocar YAML, comprueba en este orden: pods de
+`argocd` (¿CrashLoop?), `status.conditions` del recurso padre, y el log del controlador.
+`kubectl apply --dry-run=server` caza los errores de esquema antes de commitear y es barato.
 
 ## Trampas al verificar demos
 
