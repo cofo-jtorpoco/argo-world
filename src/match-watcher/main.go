@@ -35,25 +35,25 @@ type Match struct {
 // event is the body POSTed to the Argo Events webhook. It lands at data.body.* in the
 // Sensor, so the Sensor filters on body.type and reads body.score / body.revision.
 type event struct {
-	Type     string `json:"type"` // GOAL | ANOMALY
-	MatchID  string `json:"match_id"`
-	Home     string `json:"home"`
-	Away     string `json:"away"`
-	Score    string `json:"score"`
-	HomeScore int   `json:"home_score"`
-	AwayScore int   `json:"away_score"`
-	Minute   int    `json:"minute"`
-	Revision int    `json:"revision"`
-	Reason   string `json:"reason"`
-	TS       string `json:"ts"`
+	Type      string `json:"type"` // GOAL | ANOMALY
+	MatchID   string `json:"match_id"`
+	Home      string `json:"home"`
+	Away      string `json:"away"`
+	Score     string `json:"score"`
+	HomeScore int    `json:"home_score"`
+	AwayScore int    `json:"away_score"`
+	Minute    int    `json:"minute"`
+	Revision  int    `json:"revision"`
+	Reason    string `json:"reason"`
+	TS        string `json:"ts"`
 }
 
 var (
-	feedURL   = env("MATCH_FEED_URL", "http://match-feed.worldcup.svc.cluster.local:8080/match/current")
-	eventURL  = env("EVENTSOURCE_URL", "http://match-eventsource-svc.argo-events.svc.cluster.local:12000/match")
-	interval  = envDuration("POLL_INTERVAL", 30*time.Second)
-	cmName    = env("STATE_CONFIGMAP", "match-state")
-	httpc     = &http.Client{Timeout: 12 * time.Second}
+	feedURL  = env("MATCH_FEED_URL", "http://match-feed.worldcup.svc.cluster.local:8080/match/current")
+	eventURL = env("EVENTSOURCE_URL", "http://match-eventsource-svc.argo-events.svc.cluster.local:12000/match")
+	interval = envDuration("POLL_INTERVAL", 30*time.Second)
+	cmName   = env("STATE_CONFIGMAP", "match-state")
+	httpc    = &http.Client{Timeout: 12 * time.Second}
 )
 
 func main() {
@@ -107,6 +107,14 @@ func classify(prev, m *Match) (string, string) {
 	if prev == nil {
 		return "NO_CHANGE", "no prior state"
 	}
+	// A DIFFERENT MATCH is not corruption. set-match repoints the feed at another fixture,
+	// whose score legitimately starts below the previous one — without this check that
+	// looks exactly like a regression, so every poll fires ANOMALY, the rollback aborts
+	// the Rollout, and because prev never advances past an anomaly the loop never ends.
+	// Re-baseline on the new match instead.
+	if prev.MatchID != m.MatchID {
+		return "NO_CHANGE", fmt.Sprintf("match switched %s -> %s, re-baselining", prev.MatchID, m.MatchID)
+	}
 	// A regression in the total goals or the revision counter can't happen in a real
 	// match — treat it as data corruption and roll back.
 	if total(m) < total(prev) || m.Revision < prev.Revision {
@@ -125,7 +133,7 @@ func classify(prev, m *Match) (string, string) {
 func emit(m *Match, kind, reason string) bool {
 	ev := event{
 		Type: kind, MatchID: m.MatchID, Home: m.Home, Away: m.Away,
-		Score: fmt.Sprintf("%d-%d", m.HomeScore, m.AwayScore),
+		Score:     fmt.Sprintf("%d-%d", m.HomeScore, m.AwayScore),
 		HomeScore: m.HomeScore, AwayScore: m.AwayScore,
 		Minute: m.Minute, Revision: m.Revision, Reason: reason, TS: m.TS,
 	}
