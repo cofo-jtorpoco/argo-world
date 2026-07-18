@@ -47,7 +47,7 @@ spec:
         - name: scoreboard
           image: ghcr.io/cofo-jtorpoco/argo-world/scoreboard:v1
           imagePullPolicy: IfNotPresent
-          ports: [{containerPort: 8080}]
+          ports: [{containerPort: 8080, protocol: TCP}]
           env:
             - {name: MATCH_HOME,     value: "New Zealand"}   # promote-field: home
             - {name: MATCH_AWAY,     value: "Belgium"}   # promote-field: away

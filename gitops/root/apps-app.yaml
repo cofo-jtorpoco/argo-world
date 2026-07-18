@@ -10,6 +10,15 @@ metadata:
     - resources-finalizer.argocd.argoproj.io
 spec:
   project: default
+  ignoreDifferences:
+    # match-state is runtime telemetry written by match-watcher; keep it GitOps-managed
+    # for existence but ignore live data key/value drift.
+    - group: ""
+      kind: ConfigMap
+      name: match-state
+      namespace: worldcup
+      jsonPointers:
+        - /data
   source:
     repoURL: https://github.com/cofo-jtorpoco/argo-world.git
     targetRevision: main
