@@ -1,0 +1,151 @@
+# One Sensor, three dependencies, three triggers — each trigger gated by `conditions` so it
+# only fires for its own signal. Shows two DIFFERENT trigger types: argoWorkflow (submit a
+# workflow) and k8s (create an arbitrary resource, here a Rollouts Experiment).
+#
+# Same filter gotcha as the other sensors: the path is body.type (the webhook nests the HTTP
+# body under data.body) and string filters are REGEX, so anchor them.
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: on-signals
+  namespace: argo-events
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  template:
+    serviceAccountName: operate-workflow-sa
+  dependencies:
+    - name: halftime-dep
+      eventSourceName: match
+      eventName: matchevent
+      filters:
+        data:
+          - path: body.type
+            type: string
+            value: ["^HALFTIME$"]
+    - name: penalty-dep
+      eventSourceName: match
+      eventName: matchevent
+      filters:
+        data:
+          - path: body.type
+            type: string
+            value: ["^PENALTY$"]
+    - name: fulltime-dep
+      eventSourceName: match
+      eventName: matchevent
+      filters:
+        data:
+          - path: body.type
+            type: string
+            value: ["^FULLTIME$"]
+
+  triggers:
+    # HALF TIME -> the manual approval gate. The workflow parks on a suspend node.
+    - template:
+        conditions: halftime-dep
+        name: halftime-gate-trigger
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: halftime-gate-
+                namespace: argo
+              spec:
+                serviceAccountName: workflow-sa
+                workflowTemplateRef:
+                  name: halftime-gate
+                arguments:
+                  parameters:
+                    - {name: home, value: "Home"}
+                    - {name: away, value: "Away"}
+                    - {name: score, value: "0-0"}
+                    - {name: reason, value: "half time"}
+          parameters:
+            - src: {dependencyName: halftime-dep, dataKey: body.home, value: "Home"}
+              dest: spec.arguments.parameters.0.value
+            - src: {dependencyName: halftime-dep, dataKey: body.away, value: "Away"}
+              dest: spec.arguments.parameters.1.value
+            - src: {dependencyName: halftime-dep, dataKey: body.score, value: "0-0"}
+              dest: spec.arguments.parameters.2.value
+            - src: {dependencyName: halftime-dep, dataKey: body.reason, value: "half time"}
+              dest: spec.arguments.parameters.3.value
+
+    # PENALTY -> a Rollouts Experiment: run a short-lived extra ReplicaSet side by side with
+    # the stable one, without touching the Rollout. `k8s` trigger, not argoWorkflow — the
+    # Sensor creates the resource directly.
+    - template:
+        conditions: penalty-dep
+        name: penalty-experiment-trigger
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Experiment
+              metadata:
+                generateName: penalty-
+                namespace: worldcup
+                labels: {app: scoreboard, trigger: penalty}
+              spec:
+                duration: 5m
+                progressDeadlineSeconds: 300
+                templates:
+                  - name: penalty-variant
+                    replicas: 1
+                    selector:
+                      matchLabels: {app: scoreboard-experiment}
+                    template:
+                      metadata:
+                        labels: {app: scoreboard-experiment}
+                      spec:
+                        containers:
+                          - name: scoreboard
+                            image: ghcr.io/cofo-jtorpoco/argo-world/scoreboard:v1
+                            imagePullPolicy: IfNotPresent
+                            ports: [{containerPort: 8080, protocol: TCP}]
+                            env:
+                              - {name: MATCH_FEED_URL, value: "http://match-feed.worldcup.svc.cluster.local:8080/match/current"}
+                              - name: POD_NAME
+                                valueFrom: {fieldRef: {fieldPath: metadata.name}}
+                            readinessProbe:
+                              httpGet: {path: /healthz, port: 8080}
+                              initialDelaySeconds: 2
+                              periodSeconds: 2
+                            resources:
+                              requests: {cpu: 10m, memory: 24Mi}
+                              limits: {memory: 64Mi}
+
+    # FULL TIME -> archive the result through git. Reuses set-match to park the feed back on
+    # a replay so the board keeps showing something after the match ends.
+    - template:
+        conditions: fulltime-dep
+        name: fulltime-archive-trigger
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: fulltime-archive-
+                namespace: argo
+              spec:
+                serviceAccountName: workflow-sa
+                workflowTemplateRef:
+                  name: fulltime-archive
+                arguments:
+                  parameters:
+                    - {name: home, value: "Home"}
+                    - {name: away, value: "Away"}
+                    - {name: score, value: "0-0"}
+          parameters:
+            - src: {dependencyName: fulltime-dep, dataKey: body.home, value: "Home"}
+              dest: spec.arguments.parameters.0.value
+            - src: {dependencyName: fulltime-dep, dataKey: body.away, value: "Away"}
+              dest: spec.arguments.parameters.1.value
+            - src: {dependencyName: fulltime-dep, dataKey: body.score, value: "0-0"}
+              dest: spec.arguments.parameters.2.value

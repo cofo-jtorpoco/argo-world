@@ -1,0 +1,28 @@
+# The 1-minute poller, as Argo infrastructure instead of app code. One minute is the floor
+# for a CronWorkflow (and each tick costs a pod), which is why only the slow-moving
+# standings ride this path — goal detection stays on match-watcher's 30s loop.
+#
+# concurrencyPolicy: Forbid matters: a tick that overruns (slow API + git push) must not
+# race a second tick pushing to the same branch.
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: sync-groups
+  namespace: argo
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # `schedules` (a list), not `schedule` — the singular field was removed in Workflows v4
+  # and the API rejects it outright.
+  schedules: ["* * * * *"]
+  timezone: "UTC"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 30
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  workflowSpec:
+    serviceAccountName: workflow-sa
+    ttlStrategy:
+      secondsAfterCompletion: 180
+    workflowTemplateRef:
+      name: sync-groups

@@ -1,6 +1,10 @@
-# Argo CD trimmed for a 7.7Gi local cluster: no dex, no notifications, no
-# applicationset. Insecure server so `kubectl port-forward` reaches the UI over plain
-# HTTP without cert juggling.
+# Argo CD trimmed for a 7.7Gi local cluster: no dex. Insecure server so `kubectl
+# port-forward` reaches the UI over plain HTTP without cert juggling.
+#
+# applicationSet and notifications ARE enabled (they were off in the original trim): the
+# groups ApplicationSet needs the former, match alerts the latter. Measured cost is small
+# — the node allocates ~7.9Gi and the whole stack requests ~1.7Gi — but note these two are
+# Helm-managed, so toggling them needs `make bootstrap`; an Argo CD sync won't do it.
 global:
   # Keep every component modest; kind's kubelet will happily schedule and then OOM.
   resources:
@@ -13,10 +17,42 @@ configs:
 
 dex:
   enabled: false
-notifications:
-  enabled: false
+
 applicationSet:
-  enabled: false
+  enabled: true
+  resources:
+    requests: {cpu: 25m, memory: 96Mi}
+    limits: {memory: 256Mi}
+
+notifications:
+  enabled: true
+  resources:
+    requests: {cpu: 25m, memory: 64Mi}
+    limits: {memory: 192Mi}
+  # Log-only trigger: no Slack/webhook secret to set up for the demo, and the events show
+  # up in `kubectl -n argocd logs deploy/argocd-notifications-controller`.
+  notifiers:
+    service.webhook.log: |
+      url: http://scoreboard.worldcup.svc.cluster.local:8080/healthz
+      headers:
+        - name: Content-Type
+          value: application/json
+  triggers:
+    trigger.on-sync-succeeded: |
+      - when: app.status.operationState.phase in ['Succeeded']
+        send: [app-sync-succeeded]
+    trigger.on-health-degraded: |
+      - when: app.status.health.status == 'Degraded'
+        send: [app-health-degraded]
+  templates:
+    template.app-sync-succeeded: |
+      webhook:
+        log:
+          method: GET
+    template.app-health-degraded: |
+      webhook:
+        log:
+          method: GET
 
 controller:
   resources:

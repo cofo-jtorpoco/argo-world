@@ -135,3 +135,32 @@ subjects:
   - kind: ServiceAccount
     name: match-watcher
     namespace: worldcup
+---
+# The on-signals Sensor uses a `k8s` trigger to create a Rollouts Experiment on a penalty.
+# That resource lands in worldcup, but the Sensor pod runs as operate-workflow-sa in
+# argo-events, whose Role only covers Workflows in argo — without this the trigger fails
+# with a forbidden that surfaces only in the sensor pod's log.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: experiment-creator
+  namespace: worldcup
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["experiments"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: experiment-creator-rb
+  namespace: worldcup
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: experiment-creator}
+subjects:
+  - kind: ServiceAccount
+    name: operate-workflow-sa
+    namespace: argo-events

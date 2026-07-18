@@ -60,15 +60,46 @@ backfill: ## Fan out a DAG over all 104 matches (Argo Workflows)
 	  'spec: {serviceAccountName: workflow-sa, workflowTemplateRef: {name: backfill-history}}' \
 	  | kubectl -n $(NS_WF) create -f -
 
+# Switching matches goes through git (set-match Workflow), never `kubectl set env`: an
+# imperative env change is reverted by Argo CD's selfHeal and the demo silently keeps
+# serving the old match. set-match commits, Argo CD syncs, the feed rolls.
+.PHONY: set-match
+set-match:
+	@printf '%s\n' \
+	  'apiVersion: argoproj.io/v1alpha1' \
+	  'kind: Workflow' \
+	  'metadata: {generateName: set-match-, namespace: argo}' \
+	  'spec:' \
+	  '  serviceAccountName: workflow-sa' \
+	  '  workflowTemplateRef: {name: set-match}' \
+	  '  arguments:' \
+	  '    parameters:' \
+	  '      - {name: mode, value: "$(MODE)"}' \
+	  '      - {name: match, value: "$(MATCH)"}' \
+	  | kubectl -n $(NS_WF) create -f - -o name | xargs -I{} \
+	    kubectl -n $(NS_WF) wait {} --for=condition=Completed --timeout=120s
+	@# Argo CD polls every 3min by default; nudge it so the demo doesn't look hung. Then
+	@# poll the LIVE deployment until the new MATCH_ID actually lands — waiting on
+	@# `rollout status` alone would pass instantly against the pre-sync ReplicaSet.
+	@kubectl -n $(NS_ARGO) annotate app apps argocd.argoproj.io/refresh=hard --overwrite >/dev/null
+	@echo "waiting for Argo CD to sync match $(MATCH)..."
+	@for i in $$(seq 1 60); do \
+	  cur=$$(kubectl -n $(NS_APP) get deploy/match-feed \
+	    -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="MATCH_ID")].value}' 2>/dev/null); \
+	  [ "$$cur" = "$(MATCH)" ] && break; \
+	  sleep 2; \
+	done
+	@kubectl -n $(NS_APP) rollout status deploy/match-feed --timeout=120s
+
 .PHONY: demo-replay
 demo-replay: ## Replay a finished match goal-by-goal (MATCH=<1..100>)
-	kubectl -n $(NS_APP) set env deploy/match-feed MODE=replay MATCH_ID=$(MATCH)
+	@$(MAKE) --no-print-directory set-match MODE=replay MATCH=$(MATCH)
 	@$(MAKE) --no-print-directory chaos-reset
 	@echo "replaying match $(MATCH); watch: kubectl argo rollouts get rollout scoreboard -n $(NS_APP) --watch"
 
 .PHONY: demo-live
 demo-live: ## Track a real match live (MATCH=101 semi, 104 final)
-	kubectl -n $(NS_APP) set env deploy/match-feed MODE=live MATCH_ID=$(MATCH)
+	@$(MAKE) --no-print-directory set-match MODE=live MATCH=$(MATCH)
 	@$(MAKE) --no-print-directory chaos-reset
 	@echo "tracking LIVE match $(MATCH)"
 

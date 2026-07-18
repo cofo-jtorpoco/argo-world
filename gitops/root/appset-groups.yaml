@@ -1,0 +1,44 @@
+# ApplicationSet: the tournament's own structure generates the deployment topology. The
+# git directory generator watches gitops/groups/*, which the sync-groups Workflow writes
+# from the live /get/groups. A new group directory appears in git -> an Application appears
+# in Argo CD, with nobody writing an Application manifest.
+#
+# This is the piece that scales the demo: 12 Applications, none of them hand-authored.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: groups
+  namespace: argocd
+spec:
+  # Don't let the controller delete generated Applications if the generator momentarily
+  # returns nothing (failed clone, empty listing) — a blip would otherwise prune all 12.
+  syncPolicy:
+    applicationsSync: create-update
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - git:
+        repoURL: https://github.com/cofo-jtorpoco/argo-world.git
+        revision: main
+        directories:
+          - path: gitops/groups/*
+  template:
+    metadata:
+      name: 'group-{{.path.basename}}'
+      labels:
+        argo-world/group: '{{.path.basename}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/cofo-jtorpoco/argo-world.git
+        targetRevision: main
+        path: '{{.path.path}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: worldcup
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true

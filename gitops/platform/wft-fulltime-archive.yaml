@@ -1,0 +1,81 @@
+# fulltime-archive: at the final whistle, write the result into git as a durable record.
+# Demonstrates an EXIT HANDLER (`onExit`): a template that runs whether the archive
+# succeeded or failed, which is where you'd hang notification/cleanup logic.
+#
+# The archive is append-only (results/<match>.md), so re-firing FULLTIME on a later tick
+# rewrites the same file instead of piling up commits — the signals CronWorkflow will emit
+# FULLTIME once per minute while the feed stays `finished`.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fulltime-archive
+  namespace: argo
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  serviceAccountName: workflow-sa
+  entrypoint: archive
+  onExit: report
+  ttlStrategy:
+    secondsAfterCompletion: 300
+  arguments:
+    parameters:
+      - {name: home, value: "Home"}
+      - {name: away, value: "Away"}
+      - {name: score, value: "0-0"}
+  templates:
+    - name: archive
+      inputs:
+        parameters:
+          - {name: home}
+          - {name: away}
+          - {name: score}
+      retryStrategy:
+        limit: "3"
+        retryPolicy: Always
+        backoff: {duration: "5s", factor: "2"}
+      script:
+        image: alpine/git:2.45.2
+        env:
+          - {name: HOME_T, value: "{{inputs.parameters.home}}"}
+          - {name: AWAY_T, value: "{{inputs.parameters.away}}"}
+          - {name: SCORE, value: "{{inputs.parameters.score}}"}
+          - name: GH_TOKEN
+            valueFrom: {secretKeyRef: {name: github-creds, key: token}}
+        resources:
+          requests: {cpu: 25m, memory: 48Mi}
+          limits: {memory: 128Mi}
+        command: [sh]
+        source: |
+          set -eu
+          REPO="github.com/cofo-jtorpoco/argo-world.git"
+          git clone -q "https://x-access-token:${GH_TOKEN}@${REPO}" repo
+          cd repo
+          git config user.email "argo-bot@worldcup.local"
+          git config user.name  "argo-archive-bot"
+
+          mkdir -p results
+          slug=$(printf '%s-%s' "$HOME_T" "$AWAY_T" | tr ' /' '--' | tr -cd 'A-Za-z0-9-')
+          printf '# %s %s %s\n\nFull time. Archived by the fulltime-archive Workflow.\n' \
+            "$HOME_T" "$SCORE" "$AWAY_T" > "results/${slug}.md"
+
+          git add results
+          if git diff --cached --quiet; then
+            echo "result already archived"; exit 0
+          fi
+          git commit -q -m "result: ${HOME_T} ${SCORE} ${AWAY_T}"
+          git pull -q --rebase origin main || true
+          git push -q origin main
+          echo "archived ${HOME_T} ${SCORE} ${AWAY_T}"
+
+    # Exit handler: runs on success AND failure. {{workflow.status}} is the whole point.
+    - name: report
+      container:
+        image: alpine:3.20
+        command: [sh, -c]
+        args: ["echo \"fulltime-archive finished with status: $STATUS\""]
+        env:
+          - {name: STATUS, value: "{{workflow.status}}"}
+        resources:
+          requests: {cpu: 10m, memory: 32Mi}
+          limits: {memory: 64Mi}

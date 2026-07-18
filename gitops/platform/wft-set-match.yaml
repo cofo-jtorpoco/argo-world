@@ -1,0 +1,84 @@
+# set-match: switch which match the feed tracks — THROUGH GIT, not through kubectl.
+#
+# Why this exists: `kubectl set env deploy/match-feed MODE=live MATCH_ID=103` looks like it
+# works (the deployment rolls) and then Argo CD's selfHeal quietly reverts it to whatever
+# rollout of git says. The demo appeared to switch matches and never did. The only durable
+# way to change desired state in this repo is a commit, so switching matches is a Workflow
+# exactly like promote-score — same repo, same sed-on-marker trick, same push.
+#
+# Params arrive as ENV VARS so a hand-typed match id can't break the shell.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: set-match
+  namespace: argo
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  serviceAccountName: workflow-sa
+  entrypoint: setmatch
+  arguments:
+    parameters:
+      - {name: mode, value: "replay"}
+      - {name: match, value: "64"}
+  templates:
+    - name: setmatch
+      inputs:
+        parameters:
+          - {name: mode}
+          - {name: match}
+      retryStrategy:
+        limit: "4"
+        retryPolicy: Always
+        backoff: {duration: "5s", factor: "2"}
+      script:
+        image: alpine/git:2.45.2
+        env:
+          - {name: MODE, value: "{{inputs.parameters.mode}}"}
+          - {name: MATCH, value: "{{inputs.parameters.match}}"}
+          - name: GH_TOKEN
+            valueFrom: {secretKeyRef: {name: github-creds, key: token}}
+        resources:
+          requests: {cpu: 25m, memory: 48Mi}
+          limits: {memory: 128Mi}
+        command: [sh]
+        source: |
+          set -eu
+
+          # Validate before touching git: MODE is a closed set and MATCH is the 1..104
+          # fixture index. A typo here would otherwise commit a feed that serves nothing.
+          case "$MODE" in
+            live|replay) ;;
+            *) echo "invalid mode '${MODE}' (want live|replay)" >&2; exit 1 ;;
+          esac
+          case "$MATCH" in
+            ''|*[!0-9]*) echo "invalid match '${MATCH}' (want 1..104)" >&2; exit 1 ;;
+          esac
+          if [ "$MATCH" -lt 1 ] || [ "$MATCH" -gt 104 ]; then
+            echo "match ${MATCH} out of range (1..104)" >&2; exit 1
+          fi
+
+          REPO="github.com/cofo-jtorpoco/argo-world.git"
+          git clone -q "https://x-access-token:${GH_TOKEN}@${REPO}" repo
+          cd repo
+          git config user.email "argo-bot@worldcup.local"
+          git config user.name  "argo-match-bot"
+          F=gitops/apps/match-feed/match-feed.yaml
+
+          # Replace value:"..." on the line tagged `feed-field: <key>`.
+          setfield() {
+            key="$1"; val="$2"
+            esc=$(printf '%s' "$val" | sed 's/[&#\\]/\\&/g')
+            sed -i "s#\(value: \"\)[^\"]*\(\".*feed-field: ${key}\)#\1${esc}\2#" "$F"
+          }
+          setfield mode  "$MODE"
+          setfield match "$MATCH"
+
+          git add "$F"
+          if git diff --cached --quiet; then
+            echo "feed already on ${MODE} match ${MATCH}"; exit 0
+          fi
+          git commit -q -m "set-match: ${MODE} match ${MATCH}"
+          git pull -q --rebase origin main || true
+          git push -q origin main
+          echo "feed switched to ${MODE} match ${MATCH}"

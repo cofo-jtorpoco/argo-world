@@ -1,0 +1,77 @@
+# The standings board — the BLUE-GREEN counterpart to the scoreboard's canary. Same image,
+# no new app code: the point is the rollout strategy, not the workload.
+#
+# Blue-green vs canary, which is the whole reason this exists next to the scoreboard:
+#   canary     - one Rollout, traffic split gradually across two ReplicaSets
+#   blue-green - two full ReplicaSets, 100% of traffic flips at once after a preview
+#
+# autoPromotionEnabled:false parks the new version on the PREVIEW service until someone
+# promotes it (`kubectl argo rollouts promote standings -n worldcup`). That pause is the
+# demo: you can open the preview and the active side by side and see two different states.
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: standings
+  namespace: worldcup
+  labels: {app: standings}
+spec:
+  replicas: 2
+  revisionHistoryLimit: 2
+  selector:
+    matchLabels: {app: standings}
+  strategy:
+    blueGreen:
+      activeService: standings-active
+      previewService: standings-preview
+      autoPromotionEnabled: false
+      # Keep the old ReplicaSet alive briefly after the flip so a bad promote can be
+      # undone instantly instead of waiting for pods to be recreated.
+      scaleDownDelaySeconds: 30
+  template:
+    metadata:
+      labels: {app: standings}
+    spec:
+      containers:
+        - name: standings
+          image: ghcr.io/cofo-jtorpoco/argo-world/scoreboard:v1
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8080, protocol: TCP}]
+          env:
+            - {name: MATCH_HOME,     value: "Group"}      # promote-field: sb-home
+            - {name: MATCH_AWAY,     value: "Standings"}  # promote-field: sb-away
+            - {name: MATCH_SCORE,    value: "0-0"}        # promote-field: sb-score
+            - {name: MATCH_REVISION, value: "0"}          # promote-field: sb-revision
+            - {name: MATCH_FEED_URL, value: "http://match-feed.worldcup.svc.cluster.local:8080/match/current"}
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            initialDelaySeconds: 2
+            periodSeconds: 2
+          resources:
+            requests: {cpu: 10m, memory: 24Mi}
+            limits: {memory: 64Mi}
+---
+# Active: what users see. The controller repoints this selector on promote.
+apiVersion: v1
+kind: Service
+metadata:
+  name: standings-active
+  namespace: worldcup
+  labels: {app: standings}
+spec:
+  selector: {app: standings}
+  ports:
+    - {port: 8080, targetPort: 8080}
+---
+# Preview: the green side, reachable before the flip. This is what you show on stage.
+apiVersion: v1
+kind: Service
+metadata:
+  name: standings-preview
+  namespace: worldcup
+  labels: {app: standings}
+spec:
+  selector: {app: standings}
+  ports:
+    - {port: 8080, targetPort: 8080}

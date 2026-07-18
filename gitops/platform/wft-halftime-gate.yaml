@@ -1,0 +1,66 @@
+# halftime-gate: the human-in-the-loop step. At half time the pipeline PAUSES on a
+# `suspend` node and waits for someone to click Resume in the Argo Workflows UI (or run
+# `argo resume`). Nothing downstream happens until a human approves.
+#
+# This is the one Argo capability a screenshot can't fake — during the demo the workflow
+# sits there, visibly blocked, until you approve it on stage.
+#
+# The suspend has a duration cap so an unattended run eventually proceeds instead of
+# wedging a workflow (and a pod) until the TTL reaps it.
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: halftime-gate
+  namespace: argo
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  serviceAccountName: workflow-sa
+  entrypoint: gate
+  ttlStrategy:
+    secondsAfterCompletion: 600
+  arguments:
+    parameters:
+      - {name: home, value: "Home"}
+      - {name: away, value: "Away"}
+      - {name: score, value: "0-0"}
+      - {name: reason, value: "half time"}
+  templates:
+    - name: gate
+      inputs:
+        parameters:
+          - {name: home}
+          - {name: away}
+          - {name: score}
+          - {name: reason}
+      steps:
+        - - name: announce
+            template: announce
+            arguments:
+              parameters:
+                - {name: text, value: "HALF TIME · {{inputs.parameters.home}} {{inputs.parameters.score}} {{inputs.parameters.away}} — waiting for approval to resume the pipeline"}
+        - - name: approval
+            template: wait-for-human
+        - - name: resumed
+            template: announce
+            arguments:
+              parameters:
+                - {name: text, value: "approved — second half pipeline released"}
+
+    # The gate itself. `argo resume @latest -n argo` (or the UI Resume button) unblocks it.
+    - name: wait-for-human
+      suspend:
+        duration: "15m"
+
+    - name: announce
+      inputs:
+        parameters: [{name: text}]
+      container:
+        image: alpine:3.20
+        command: [sh, -c]
+        args: ["echo \"$MSG\""]
+        env:
+          - {name: MSG, value: "{{inputs.parameters.text}}"}
+        resources:
+          requests: {cpu: 10m, memory: 32Mi}
+          limits: {memory: 64Mi}

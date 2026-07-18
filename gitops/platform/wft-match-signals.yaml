@@ -1,0 +1,91 @@
+# match-signals: derive the SLOW match signals from the live feed and post them to the same
+# Argo Events webhook the watcher uses. Classification lives here, in a Workflow — not in Go
+# — so adding a signal is a manifest change, not an image rebuild.
+#
+# Split of duties (deliberate): match-watcher keeps the FAST path (goals/anomalies, 30s,
+# because a goal driving a canary should not wait a minute); this Workflow owns the slow
+# signals a CronWorkflow can serve at 1-min resolution.
+#
+# Signals, all from real API fields:
+#   PENALTY  - "(p)" marker inside home_scorers/away_scorers
+#   HALFTIME - time_elapsed in the 45..47 window
+#   FULLTIME - finished == TRUE / time_elapsed == finished
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: match-signals
+  namespace: argo
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  serviceAccountName: workflow-sa
+  entrypoint: signals
+  arguments:
+    parameters:
+      - {name: feed-url, value: "http://match-feed.worldcup.svc.cluster.local:8080/match/current"}
+      - {name: api-base, value: "https://worldcup26.ir"}
+      - {name: event-url, value: "http://match-eventsource-svc.argo-events.svc.cluster.local:12000/match"}
+  templates:
+    - name: signals
+      inputs:
+        parameters:
+          - {name: feed-url}
+          - {name: api-base}
+          - {name: event-url}
+      script:
+        image: alpine:3.20
+        env:
+          - {name: FEED_URL, value: "{{inputs.parameters.feed-url}}"}
+          - {name: API_BASE, value: "{{inputs.parameters.api-base}}"}
+          - {name: EVENT_URL, value: "{{inputs.parameters.event-url}}"}
+        resources:
+          requests: {cpu: 50m, memory: 64Mi}
+          limits: {memory: 192Mi}
+        command: [sh]
+        source: |
+          set -eu
+          apk add --no-cache -q curl jq
+
+          curl -sS --max-time 15 "$FEED_URL" -o /tmp/m.json
+          jq -e '.match_id' /tmp/m.json >/dev/null 2>&1 || { echo "bad feed payload" >&2; exit 1; }
+
+          MID=$(jq -r '.match_id' /tmp/m.json)
+          HOME=$(jq -r '.home' /tmp/m.json)
+          AWAY=$(jq -r '.away' /tmp/m.json)
+          SCORE="$(jq -r '.home_score' /tmp/m.json)-$(jq -r '.away_score' /tmp/m.json)"
+          MIN=$(jq -r '.minute' /tmp/m.json)
+          REV=$(jq -r '.revision' /tmp/m.json)
+          STATUS=$(jq -r '.status' /tmp/m.json)
+
+          emit() {
+            kind="$1"; reason="$2"
+            payload=$(jq -nc --arg t "$kind" --arg m "$MID" --arg h "$HOME" --arg a "$AWAY" \
+              --arg s "$SCORE" --arg r "$reason" --argjson min "${MIN:-0}" --argjson rev "${REV:-0}" \
+              '{type:$t,match_id:$m,home:$h,away:$a,score:$s,minute:$min,revision:$rev,reason:$r}')
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
+              -X POST -H 'Content-Type: application/json' -d "$payload" "$EVENT_URL" || echo 000)
+            echo "emit ${kind} -> ${code} (${reason})"
+            case "$code" in 2*) ;; *) echo "emit ${kind} failed" >&2; return 1 ;; esac
+          }
+
+          # PENALTY: the upstream marks penalty goals as "Name 17' (p)" in the scorers list.
+          # Only the raw API carries scorers, so this one reads upstream, not the feed.
+          if curl -sS --max-time 15 "${API_BASE}/get/games" -o /tmp/g.json 2>/dev/null; then
+            pens=$(jq -r --arg id "$MID" \
+              '[.games[] | select(.id==$id) | (.home_scorers, .away_scorers)]
+               | map(select(. != null and . != "null")) | join(" ")
+               | [scan("\\(p\\)")] | length' /tmp/g.json 2>/dev/null || echo 0)
+            [ "${pens:-0}" -gt 0 ] && emit PENALTY "${pens} penalty goal(s) in match ${MID}" || true
+          fi
+
+          # HALFTIME: a narrow window so a 1-min tick fires it once, not for 15 minutes.
+          if [ "$STATUS" = "live" ] && [ "${MIN:-0}" -ge 45 ] && [ "${MIN:-0}" -le 47 ]; then
+            emit HALFTIME "half time at ${MIN}'"
+          fi
+
+          # FULLTIME: the feed reports finished once the upstream flips it.
+          if [ "$STATUS" = "finished" ]; then
+            emit FULLTIME "full time ${SCORE}"
+          fi
+
+          echo "signals pass done: ${HOME} ${SCORE} ${AWAY} min=${MIN} status=${STATUS}"

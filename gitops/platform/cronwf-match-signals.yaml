@@ -1,0 +1,27 @@
+# The 1-minute signal poller. Reads the feed (and the upstream scorers for penalties) and
+# posts HALFTIME / PENALTY / FULLTIME to the Argo Events webhook, where on-signals picks
+# them up. Goals do NOT come through here — match-watcher keeps that on a 30s loop.
+#
+# Forbid + a short startingDeadline: a tick that overruns must not stack a second emitter
+# on top of it, or a single half time would fire the approval gate twice.
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: match-signals
+  namespace: argo
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  # `schedules` (a list), not `schedule` — removed in Workflows v4.
+  schedules: ["* * * * *"]
+  timezone: "UTC"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 30
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  workflowSpec:
+    serviceAccountName: workflow-sa
+    ttlStrategy:
+      secondsAfterCompletion: 180
+    workflowTemplateRef:
+      name: match-signals

@@ -1,6 +1,10 @@
 # match-feed wraps worldcup26.ir and serves a normalized /match/current. Default mode is
 # replay so the demo works at any hour; switch MODE=live + MATCH_ID=101/104 for the real
 # semifinal/final. The chaos endpoints drive the rollback path.
+#
+# MODE/MATCH_ID are single-line flow entries tagged `# feed-field: <key>`, rewritten by the
+# set-match Workflow (same sed trick as promote-field in rollout.yaml). DO NOT reformat to
+# multi-line. Never change them with `kubectl set env` — Argo CD's selfHeal reverts it.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,8 +25,8 @@ spec:
           imagePullPolicy: IfNotPresent
           ports: [{containerPort: 8080}]
           env:
-            - {name: MODE, value: "replay"}
-            - {name: MATCH_ID, value: "64"}
+            - {name: MODE, value: "replay"}   # feed-field: mode
+            - {name: MATCH_ID, value: "64"}   # feed-field: match
             - {name: REPLAY_SECONDS_PER_MINUTE, value: "1.0"}
           readinessProbe:
             httpGet: {path: /healthz, port: 8080}

@@ -3,3 +3,8 @@
 *.test
 # local env overrides
 *.local.env
+
+# compiled service binaries (built into images, never committed)
+/src/*/scoreboard
+/src/*/match-feed
+/src/*/match-watcher
