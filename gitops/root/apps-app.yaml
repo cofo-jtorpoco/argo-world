@@ -6,6 +6,10 @@ kind: Application
 metadata:
   name: apps
   namespace: argocd
+  annotations:
+    # Inert without this: the notifications controller only fires for subscribed apps.
+    notifications.argoproj.io/subscribe.on-sync-succeeded.log: ""
+    notifications.argoproj.io/subscribe.on-health-degraded.log: ""
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:

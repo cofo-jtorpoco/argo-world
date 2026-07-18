@@ -31,6 +31,10 @@ spec:
       name: 'group-{{.path.basename | lower}}'
       labels:
         argo-world/group: '{{.path.basename}}'
+      annotations:
+        # Without a subscribe annotation the notifications controller runs and never fires:
+        # triggers and templates in the CM are inert on their own.
+        notifications.argoproj.io/subscribe.on-health-degraded.log: ""
     spec:
       project: default
       source:
