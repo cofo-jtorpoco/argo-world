@@ -52,22 +52,41 @@ spec:
           # Previous tick's state. Missing ConfigMap on the very first run is expected.
           prev_mid=$(kubectl -n "$NS" get cm "$CM" -o jsonpath='{.data.match_id}' 2>/dev/null || echo "")
           prev_min=$(kubectl -n "$NS" get cm "$CM" -o jsonpath='{.data.minute}' 2>/dev/null || echo "")
+          prev_ht=$(kubectl -n "$NS" get cm "$CM" -o jsonpath='{.data.halftime_ticks}' 2>/dev/null || echo "")
           case "$prev_min" in ''|*[!0-9]*) prev_min=0 ;; esac
+          case "$prev_ht" in ''|*[!0-9]*) prev_ht=0 ;; esac
 
+          # Length of the half-time break, in ticks (== minutes). Real matches stop the
+          # clock at 45'; a counter that keeps running through the break puts the whole
+          # second half 15 minutes fast.
+          HT_BREAK=15
+
+          ht=$prev_ht
           if [ "$status" != "live" ]; then
             # Before kick-off and after the whistle the clock sits at 0 rather than drifting.
             minute=0
+            ht=0
           elif [ "$mid" != "$prev_mid" ]; then
             # New fixture: restart the clock instead of inheriting the old match's minute.
             minute=1
+            ht=0
+          elif [ "$prev_min" -eq 45 ] && [ "$prev_ht" -lt "$HT_BREAK" ]; then
+            # HALF TIME: hold at 45' for the length of the break. The tick still fires every
+            # minute — it just doesn't advance the clock, which is what a real match does.
+            minute=45
+            ht=$((prev_ht + 1))
+            echo "half time: holding at 45' (${ht}/${HT_BREAK})"
           else
             minute=$((prev_min + 1))
+          fi
 
-            # Anchor to reality. time_elapsed is the literal word "live" during play, so the
-            # running minute is absent from the API — but the scorer strings carry the minute
-            # of every goal ("Azri Knsa 18'"). The latest goal is a hard floor: the match is
-            # at least that far along. Without it a counter that starts late stays late all
-            # match; with it, every goal re-syncs the clock to real data.
+          # Anchor to reality, AFTER the branch so it also breaks the half-time hold: a goal
+          # timestamped past 45' proves the second half is under way, whatever the counter
+          # thinks. time_elapsed is the literal word "live" during play, so the running
+          # minute is absent from the API — but the scorer strings carry each goal's minute
+          # ("Azri Knsa 18'"). The latest goal is a hard floor: the match is at least that
+          # far along. Without it a counter that starts late stays late all match.
+          if [ "$status" = "live" ] && [ "$mid" = "$prev_mid" ]; then
             games=$(curl -sS --max-time 15 "${API_BASE}/get/games" 2>/dev/null || echo "")
             if [ -n "$games" ]; then
               last_goal=$(printf '%s' "$games" | jq -r --arg id "$mid" '
@@ -79,17 +98,20 @@ spec:
               if [ "$last_goal" -gt "$minute" ]; then
                 echo "anchoring clock to last goal at ${last_goal}' (counter was ${minute})"
                 minute=$last_goal
+                # A goal past the break means half time is over; stop holding.
+                [ "$minute" -gt 45 ] && ht="$HT_BREAK" || true
               fi
             fi
-
-            # Stoppage time is real, 300' is not. Clamp so a stuck feed can't run away.
-            [ "$minute" -gt 120 ] && minute=120 || true
           fi
+
+          # Stoppage time is real, 300' is not. Clamp so a stuck feed can't run away.
+          [ "$minute" -gt 120 ] && minute=120 || true
 
           kubectl -n "$NS" create configmap "$CM" \
             --from-literal=match_id="$mid" \
             --from-literal=minute="$minute" \
             --from-literal=status="$status" \
+            --from-literal=halftime_ticks="$ht" \
             --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-          echo "clock: match ${mid} status=${status} minute=${minute} (prev ${prev_min})"
+          echo "clock: match ${mid} status=${status} minute=${minute} (prev ${prev_min}, ht ${ht})"
