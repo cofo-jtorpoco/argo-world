@@ -164,3 +164,39 @@ subjects:
   - kind: ServiceAccount
     name: operate-workflow-sa
     namespace: argo-events
+---
+# The scoreboard reads the standings-* ConfigMaps back out of the cluster to render the
+# group tables, so it needs its own SA — the default one can't list ConfigMaps. Scoped to
+# list/watch only: the UI never writes.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: scoreboard
+  namespace: worldcup
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: standings-reader
+  namespace: worldcup
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: standings-reader-rb
+  namespace: worldcup
+  annotations:
+    argocd.argoproj.io/sync-wave: "-5"
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: standings-reader}
+subjects:
+  - kind: ServiceAccount
+    name: scoreboard
+    namespace: worldcup

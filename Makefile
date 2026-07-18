@@ -37,8 +37,10 @@ image-local: ## Build one service and load it into the node (SVC=match-feed|matc
 	  -t $(IMAGE_REPO)/$(SVC):$(IMAGE_TAG) --load src/$(SVC)
 	docker save $(IMAGE_REPO)/$(SVC):$(IMAGE_TAG) | \
 	  docker exec -i desktop-control-plane ctr -n k8s.io images import -
-	kubectl -n $(NS_APP) rollout restart deploy/$(SVC) 2>/dev/null || \
-	  kubectl -n $(NS_APP) rollout restart rollout/$(SVC)
+	@# A Rollout is NOT a Deployment: `kubectl rollout restart rollout/x` fails with
+	@# "no kind Rollout is registered". Restarting one needs the argo-rollouts plugin.
+	@kubectl -n $(NS_APP) rollout restart deploy/$(SVC) 2>/dev/null || \
+	  kubectl argo rollouts restart $(SVC) -n $(NS_APP)
 
 .PHONY: bootstrap
 bootstrap: ## Install the 4 Argo control planes + the root Application

@@ -43,6 +43,8 @@ spec:
     metadata:
       labels: {app: scoreboard}
     spec:
+      # Needs the standings-reader SA to list the standings-* ConfigMaps for the UI.
+      serviceAccountName: scoreboard
       containers:
         - name: scoreboard
           image: ghcr.io/cofo-jtorpoco/argo-world/scoreboard:v1

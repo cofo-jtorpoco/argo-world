@@ -10,14 +10,18 @@
 package main
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -37,6 +41,7 @@ func main() {
 	http.HandleFunc("/", handleIndex)
 	http.HandleFunc("/api/whoami", handleWhoami)
 	http.HandleFunc("/api/live", handleLive)
+	http.HandleFunc("/api/standings", handleStandings)
 	http.HandleFunc("/consistency", handleConsistency)
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
 	log.Printf("scoreboard up: %s %s-? rev=%d pod=%s", scoreLabel(), matchScore, matchRev, podName)
@@ -52,6 +57,123 @@ func handleWhoami(w http.ResponseWriter, r *http.Request) {
 		"away":     away,
 		"minute":   minute,
 	})
+}
+
+// --- standings -------------------------------------------------------------------
+//
+// The sync-groups Workflow writes one standings-<g> ConfigMap per group into git; the
+// ApplicationSet's 12 Applications sync them into the cluster. This reads them back so the
+// live table actually reaches the screen, closing the loop API -> git -> Argo CD -> UI.
+//
+// Talks to the API server directly over the projected ServiceAccount token instead of
+// pulling in client-go: it keeps go.mod empty and the image distroless.
+
+type groupTable struct {
+	Group string           `json:"group"`
+	Teams []map[string]any `json:"teams"`
+}
+
+var (
+	k8sNS    = env("POD_NAMESPACE", "worldcup")
+	stMu     sync.Mutex
+	stCache  []groupTable
+	stExpiry time.Time
+)
+
+// standings caches for 15s: the page polls every 1.5s across N pods, and standings only
+// move when a match ends — without the cache this would hammer the API server.
+func standings() ([]groupTable, error) {
+	stMu.Lock()
+	defer stMu.Unlock()
+	if time.Now().Before(stExpiry) && stCache != nil {
+		return stCache, nil
+	}
+
+	host := os.Getenv("KUBERNETES_SERVICE_HOST")
+	port := os.Getenv("KUBERNETES_SERVICE_PORT")
+	if host == "" || port == "" {
+		return nil, fmt.Errorf("not running in-cluster")
+	}
+	const sa = "/var/run/secrets/kubernetes.io/serviceaccount"
+	token, err := os.ReadFile(sa + "/token")
+	if err != nil {
+		return nil, fmt.Errorf("read token: %w", err)
+	}
+	ca, err := os.ReadFile(sa + "/ca.crt")
+	if err != nil {
+		return nil, fmt.Errorf("read ca: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(ca) {
+		return nil, fmt.Errorf("bad ca bundle")
+	}
+
+	endpoint := fmt.Sprintf("https://%s:%s/api/v1/namespaces/%s/configmaps?labelSelector=%s",
+		host, port, url.PathEscape(k8sNS), url.QueryEscape("app=standings"))
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+
+	cl := &http.Client{
+		Timeout:   6 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}},
+	}
+	resp, err := cl.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
+		return nil, fmt.Errorf("api server %d: %s", resp.StatusCode, body)
+	}
+
+	var list struct {
+		Items []struct {
+			Data map[string]string `json:"data"`
+		} `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		return nil, err
+	}
+
+	out := make([]groupTable, 0, len(list.Items))
+	for _, it := range list.Items {
+		g := it.Data["group"]
+		if g == "" {
+			continue
+		}
+		var teams []map[string]any
+		// A malformed table must not sink the whole board: skip that group, keep the rest.
+		if err := json.Unmarshal([]byte(it.Data["table"]), &teams); err != nil {
+			log.Printf("standings: group %s has an unparseable table: %v", g, err)
+			continue
+		}
+		out = append(out, groupTable{Group: g, Teams: teams})
+	}
+	sortGroups(out)
+
+	stCache, stExpiry = out, time.Now().Add(15*time.Second)
+	return out, nil
+}
+
+func sortGroups(g []groupTable) {
+	for i := 1; i < len(g); i++ {
+		for j := i; j > 0 && g[j].Group < g[j-1].Group; j-- {
+			g[j], g[j-1] = g[j-1], g[j]
+		}
+	}
+}
+
+func handleStandings(w http.ResponseWriter, r *http.Request) {
+	st, err := standings()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, st)
 }
 
 func handleLive(w http.ResponseWriter, r *http.Request) {
@@ -263,6 +385,15 @@ const page = `<!doctype html>
 	.dot{width:.66rem;height:.66rem;border-radius:3px}
 	.meta{color:#7f90ad;font-size:.78rem;margin-top:.44rem;text-align:center}
 
+	.groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:.6rem}
+	.grp{background:#0d1526cc;border:1px solid #24344f;border-radius:12px;padding:.55rem .6rem}
+	.grp h3{font-size:.72rem;letter-spacing:.15em;text-transform:uppercase;color:var(--gold);margin-bottom:.4rem}
+	.grp table{width:100%;border-collapse:collapse;font-size:.8rem}
+	.grp td{padding:.16rem .2rem;color:#c6d3e6}
+	.grp td.pts{text-align:right;font-variant-numeric:tabular-nums;color:var(--mint);font-weight:700}
+	.grp td.tm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:9.5rem}
+	.grp tr+tr td{border-top:1px solid #1b2740}
+
 	@media (max-width:720px){
 		.teams{grid-template-columns:1fr;gap:.18rem}
 		.side,.side.right{justify-content:center}
@@ -288,6 +419,12 @@ const page = `<!doctype html>
 			<span class="pill">deployed revision <b id="rev">0</b></span>
 		</div>
 		<div class="meme" id="meme">warming up...</div>
+	</div>
+
+	<div class="split" id="standingsPanel" hidden>
+		<h2>Group standings · API → Workflow → git → ApplicationSet → 12 Applications</h2>
+		<div class="groups" id="groups"></div>
+		<div class="meta" id="stmeta"></div>
 	</div>
 
 	<div class="split">
@@ -348,6 +485,33 @@ function boomGoal(){
 	memeEl.classList.remove('goal');
 	void memeEl.offsetWidth;
 	memeEl.classList.add('goal');
+}
+
+// Standings come from ConfigMaps the ApplicationSet syncs, so they move only when a match
+// ends — poll far slower than the traffic split, and never let a failure blank the board.
+async function loadStandings(){
+	try{
+		const res=await fetch('/api/standings',{cache:'no-store'});
+		if(!res.ok) return;
+		const groups=await res.json();
+		if(!Array.isArray(groups)||!groups.length) return;
+		const box=document.getElementById('groups');
+		box.innerHTML='';
+		let teams=0;
+		for(const g of groups){
+			const rows=(g.teams||[]).map(t=>
+				'<tr><td class="tm">'+(t.code||'')+' '+(t.name||'')+'</td>'+
+				'<td class="pts">'+(t.pts||'0')+'</td></tr>').join('');
+			teams+=(g.teams||[]).length;
+			const el=document.createElement('div');
+			el.className='grp';
+			el.innerHTML='<h3>Group '+g.group+'</h3><table>'+rows+'</table>';
+			box.appendChild(el);
+		}
+		document.getElementById('stmeta').textContent=
+			groups.length+' groups · '+teams+' teams · one Argo CD Application per group';
+		document.getElementById('standingsPanel').hidden=false;
+	}catch(e){ /* keep the last good board */ }
 }
 
 async function sample(){
@@ -426,5 +590,6 @@ async function sample(){
 		: 'stable · single revision';
 }
 sample(); setInterval(sample,1500);
+loadStandings(); setInterval(loadStandings,20000);
 </script>
 </body></html>`
