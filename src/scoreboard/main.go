@@ -36,6 +36,7 @@ var (
 func main() {
 	http.HandleFunc("/", handleIndex)
 	http.HandleFunc("/api/whoami", handleWhoami)
+	http.HandleFunc("/api/live", handleLive)
 	http.HandleFunc("/consistency", handleConsistency)
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
 	log.Printf("scoreboard up: %s %s-? rev=%d pod=%s", scoreLabel(), matchScore, matchRev, podName)
@@ -51,6 +52,15 @@ func handleWhoami(w http.ResponseWriter, r *http.Request) {
 		"away":     away,
 		"minute":   minute,
 	})
+}
+
+func handleLive(w http.ResponseWriter, r *http.Request) {
+	live, err := fetchLive()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, live)
 }
 
 // handleConsistency compares the baked score against the live source. A legit promote
@@ -87,9 +97,16 @@ func handleConsistency(w http.ResponseWriter, r *http.Request) {
 }
 
 type liveMatch struct {
-	HomeScore int `json:"home_score"`
-	AwayScore int `json:"away_score"`
-	Revision  int `json:"revision"`
+	MatchID   string `json:"match_id"`
+	Home      string `json:"home"`
+	Away      string `json:"away"`
+	HomeScore int    `json:"home_score"`
+	AwayScore int    `json:"away_score"`
+	Minute    int    `json:"minute"`
+	Revision  int    `json:"revision"`
+	Status    string `json:"status"`
+	Source    string `json:"source"`
+	TS        string `json:"ts"`
 }
 
 func fetchLive() (*liveMatch, error) {
@@ -155,89 +172,258 @@ const page = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Argo World · Live Scoreboard</title>
 <style>
-  :root{color-scheme:dark}
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0a0e14;color:#e6edf3;
-       min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2rem;padding:2rem}
-  .card{background:#12181f;border:1px solid #222c38;border-radius:20px;padding:2.5rem 3.5rem;text-align:center;
-        box-shadow:0 20px 60px rgba(0,0,0,.4);min-width:min(560px,92vw)}
-  .tag{font-size:.72rem;letter-spacing:.18em;text-transform:uppercase;color:#7d8896;margin-bottom:1.2rem}
-  .teams{display:flex;align-items:center;justify-content:center;gap:1.4rem;font-weight:700}
-  .team{font-size:1.5rem;color:#c9d4e0;min-width:8rem}
-  .score{font-size:4.5rem;font-variant-numeric:tabular-nums;line-height:1;color:#fff}
-  .dash{font-size:2.4rem;color:#4a5666}
-  .min{margin-top:1rem;color:#7d8896;font-size:.95rem}
-  .min b{color:#3fb950}
-  .split{width:min(720px,92vw)}
-  .split h2{font-size:.72rem;letter-spacing:.18em;text-transform:uppercase;color:#7d8896;margin-bottom:.8rem;text-align:center}
-  .bar{display:flex;height:44px;border-radius:12px;overflow:hidden;border:1px solid #222c38}
-  .seg{display:flex;align-items:center;justify-content:center;font-size:.85rem;font-weight:700;color:#0a0e14;
-       transition:width .6s ease;white-space:nowrap;overflow:hidden}
-  .legend{display:flex;flex-wrap:wrap;gap:.6rem 1.4rem;justify-content:center;margin-top:.9rem;font-size:.82rem;color:#9aa7b4}
-  .legend span{display:inline-flex;align-items:center;gap:.45rem}
-  .dot{width:.7rem;height:.7rem;border-radius:3px}
-  .meta{color:#5a6674;font-size:.78rem;margin-top:.4rem}
+	:root{
+		color-scheme:dark;
+		--bg0:#05070b;
+		--bg1:#0e1420;
+		--panel:#11192aee;
+		--line:#25324a;
+		--text:#e8edf7;
+		--muted:#93a4bf;
+		--gold:#f7cf5f;
+		--mint:#5cf2aa;
+	}
+	*{box-sizing:border-box;margin:0;padding:0}
+	body{
+		font-family:system-ui,-apple-system,"Segoe UI",sans-serif;
+		background:
+			radial-gradient(1200px 700px at 8% -5%, #22335c66 0%, transparent 58%),
+			radial-gradient(1200px 700px at 88% 5%, #33604c66 0%, transparent 55%),
+			linear-gradient(180deg,var(--bg1),var(--bg0));
+		color:var(--text);
+		min-height:100vh;
+		display:flex;
+		flex-direction:column;
+		align-items:center;
+		justify-content:center;
+		gap:1.1rem;
+		padding:1rem;
+		overflow:hidden;
+	}
+	.goalflash{
+		position:fixed;
+		inset:0;
+		background:radial-gradient(circle at 50% 50%, #fff2 0%, #fff0 60%);
+		opacity:0;
+		pointer-events:none;
+		z-index:20;
+	}
+	.goalflash.boom{animation:boom .8s ease-out}
+	@keyframes boom{0%{opacity:0}20%{opacity:.95}100%{opacity:0}}
+
+	.switcher{
+		position:fixed;
+		top:1.1rem;
+		left:50%;
+		transform:translateX(-50%) translateY(-16px);
+		background:#0f1a2edc;
+		border:1px solid #2a3a59;
+		color:#d7e4ff;
+		border-radius:999px;
+		padding:.48rem .9rem;
+		font-size:.82rem;
+		opacity:0;
+		z-index:21;
+	}
+	.switcher.on{animation:switchIn 2.6s ease}
+	@keyframes switchIn{0%{opacity:0;transform:translateX(-50%) translateY(-18px)}10%{opacity:1;transform:translateX(-50%) translateY(0)}85%{opacity:1}100%{opacity:0}}
+
+	.card{
+		width:min(980px,98vw);
+		background:var(--panel);
+		border:1px solid var(--line);
+		border-radius:24px;
+		padding:1.3rem 1.2rem 1.1rem;
+		box-shadow:0 16px 56px #0008;
+		backdrop-filter:blur(8px);
+		position:relative;
+	}
+	.tag{font-size:.72rem;letter-spacing:.18em;text-transform:uppercase;color:var(--muted);margin-bottom:.7rem;text-align:center}
+	.teams{display:grid;grid-template-columns:1fr auto 1fr;gap:.8rem;align-items:center}
+	.side{display:flex;align-items:center;gap:.52rem;min-width:0}
+	.side.right{justify-content:flex-end}
+	.flag{font-size:2.1rem;filter:drop-shadow(0 2px 8px #0008)}
+	.team{font-size:clamp(1.2rem,2.9vw,2rem);font-weight:750;letter-spacing:.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+	.scoreboard{display:flex;align-items:flex-end;gap:.45rem}
+	.score{font-size:clamp(3rem,9vw,5.9rem);font-variant-numeric:tabular-nums;line-height:.92;color:#fff}
+	.dash{font-size:clamp(2rem,5.5vw,3.3rem);color:#6f7f99;padding-bottom:.58rem}
+	.livebar{margin-top:.8rem;display:flex;justify-content:center;gap:.7rem;align-items:center;flex-wrap:wrap;color:var(--muted);font-size:.92rem}
+	.pill{padding:.26rem .56rem;border:1px solid #31425f;border-radius:999px;background:#0b1322b8}
+	.pill b{color:var(--mint)}
+	.meme{margin-top:.65rem;text-align:center;font-size:.95rem;color:#d9e9ff;min-height:1.4rem;letter-spacing:.01em}
+	.meme.goal{color:var(--gold);animation:pulse .62s ease}
+	@keyframes pulse{0%{transform:scale(1)}45%{transform:scale(1.07)}100%{transform:scale(1)}}
+
+	.split{width:min(980px,98vw);background:#0a1220cc;border:1px solid #263654;border-radius:18px;padding:.9rem 1rem .92rem}
+	.split h2{font-size:.72rem;letter-spacing:.17em;text-transform:uppercase;color:var(--muted);margin-bottom:.72rem;text-align:center}
+	.bar{display:flex;height:40px;border-radius:11px;overflow:hidden;border:1px solid #2a3a5a;background:#0f1627}
+	.seg{display:flex;align-items:center;justify-content:center;font-size:.83rem;font-weight:740;color:#0d1118;transition:width .55s ease;white-space:nowrap;overflow:hidden}
+	.legend{display:flex;flex-wrap:wrap;gap:.45rem 1rem;justify-content:center;margin-top:.72rem;font-size:.81rem;color:#a7b4c9}
+	.legend span{display:inline-flex;align-items:center;gap:.4rem}
+	.dot{width:.66rem;height:.66rem;border-radius:3px}
+	.meta{color:#7f90ad;font-size:.78rem;margin-top:.44rem;text-align:center}
+
+	@media (max-width:720px){
+		.teams{grid-template-columns:1fr;gap:.18rem}
+		.side,.side.right{justify-content:center}
+		.scoreboard{justify-content:center}
+		.tag{margin-bottom:.46rem}
+	}
 </style></head>
 <body>
-  <div class="card">
-    <div class="tag">Argo World · FIFA World Cup 2026</div>
-    <div class="teams">
-      <span class="team" id="home">—</span>
-      <span class="score" id="hs">0</span><span class="dash">:</span><span class="score" id="as">0</span>
-      <span class="team" id="away">—</span>
-    </div>
-    <div class="min">minute <b id="min">0'</b> · scoreboard revision <b id="rev">0</b></div>
-  </div>
+	<div class="goalflash" id="goalflash"></div>
+	<div class="switcher" id="switcher"></div>
 
-  <div class="split">
-    <h2>Canary traffic split · live from /api/whoami</h2>
-    <div class="bar" id="bar"></div>
-    <div class="legend" id="legend"></div>
-    <div class="meta" id="meta">sampling…</div>
-  </div>
+	<div class="card">
+		<div class="tag">Argo World · Match Feed + Canary Runtime</div>
+		<div class="teams">
+			<div class="side"><span class="flag" id="hflag">🏳️</span><span class="team" id="home">Home</span></div>
+			<div class="scoreboard"><span class="score" id="hs">0</span><span class="dash">:</span><span class="score" id="as">0</span></div>
+			<div class="side right"><span class="team" id="away">Away</span><span class="flag" id="aflag">🏳️</span></div>
+		</div>
+		<div class="livebar">
+			<span class="pill">status <b id="status">init</b></span>
+			<span class="pill">minute <b id="min">0'</b></span>
+			<span class="pill">feed revision <b id="feedrev">0</b></span>
+			<span class="pill">deployed revision <b id="rev">0</b></span>
+		</div>
+		<div class="meme" id="meme">warming up...</div>
+	</div>
+
+	<div class="split">
+		<h2>Canary traffic split · sampled from /api/whoami</h2>
+		<div class="bar" id="bar"></div>
+		<div class="legend" id="legend"></div>
+		<div class="meta" id="meta">sampling...</div>
+	</div>
 
 <script>
-const palette=["#3fb950","#58a6ff","#d29922","#bc8cff","#f85149","#39c5cf"];
+const palette=['#5cf2aa','#63b3ff','#f7cf5f','#f08dff','#ff6f61','#6ce4da'];
+const goalMemes=[
+	'GOAL! The canary just did a backflip.',
+	'Goal detected. Pipelines celebrating quietly.',
+	'Net shaken. Git prepared. Rollout watching.',
+	'That was clean. Even Argo CD smiled.',
+	'Live football meets declarative destiny.'
+];
+const steadyMemes=[
+	'Platform calm. Signals clean. Traffic steady.',
+	'No drama. Just healthy reconciliation.',
+	'Everything green. Coffee approved.',
+	'Cluster breathing normally.',
+	'Still stable. Canary waiting for action.'
+];
+
+const flags={
+	'Argentina':'🇦🇷','Australia':'🇦🇺','Austria':'🇦🇹','Belgium':'🇧🇪','Bosnia and Herzegovina':'🇧🇦','Brazil':'🇧🇷',
+	'Canada':'🇨🇦','Cape Verde':'🇨🇻','Colombia':'🇨🇴','Croatia':'🇭🇷','Democratic Republic of the Congo':'🇨🇩',
+	'Egypt':'🇪🇬','England':'🏴','France':'🇫🇷','Germany':'🇩🇪','Ghana':'🇬🇭','Haiti':'🇭🇹','Iran':'🇮🇷','Iraq':'🇮🇶',
+	'Ivory Coast':'🇨🇮','Japan':'🇯🇵','Jordan':'🇯🇴','Mexico':'🇲🇽','Morocco':'🇲🇦','Netherlands':'🇳🇱','New Zealand':'🇳🇿',
+	'Norway':'🇳🇴','Panama':'🇵🇦','Paraguay':'🇵🇾','Portugal':'🇵🇹','Qatar':'🇶🇦','Saudi Arabia':'🇸🇦','Scotland':'🏴',
+	'Senegal':'🇸🇳','South Africa':'🇿🇦','South Korea':'🇰🇷','Spain':'🇪🇸','Sweden':'🇸🇪','Switzerland':'🇨🇭',
+	'Tunisia':'🇹🇳','Turkey':'🇹🇷','United States':'🇺🇸','Uruguay':'🇺🇾','Algeria':'🇩🇿'
+};
+
+const state={matchKey:'',total:-1,memeTick:0};
+
+function flagFor(name){ return flags[name] || '🏳️'; }
+function meme(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+function parseIntSafe(v){ const n=parseInt(v,10); return Number.isFinite(n)?n:0; }
+
+function showSwitcher(msg){
+	const el=document.getElementById('switcher');
+	el.textContent=msg;
+	el.classList.remove('on');
+	void el.offsetWidth;
+	el.classList.add('on');
+}
+
+function boomGoal(){
+	const flash=document.getElementById('goalflash');
+	const memeEl=document.getElementById('meme');
+	flash.classList.remove('boom');
+	void flash.offsetWidth;
+	flash.classList.add('boom');
+	memeEl.textContent=meme(goalMemes);
+	memeEl.classList.remove('goal');
+	void memeEl.offsetWidth;
+	memeEl.classList.add('goal');
+}
+
 async function sample(){
-  const counts={}, meta={};
-  const N=24;
-  const reqs=[];
-  for(let i=0;i<N;i++) reqs.push(fetch('/api/whoami',{cache:'no-store'}).then(r=>r.json()).catch(()=>null));
-  const rows=(await Promise.all(reqs)).filter(Boolean);
-  let latest=null;
-  for(const r of rows){
-    const key=r.revision+" · "+r.score;
-    counts[key]=(counts[key]||0)+1;
-    meta[key]=r;
-    if(!latest||r.revision>=latest.revision) latest=r;
-  }
-  if(latest){
-    document.getElementById('home').textContent=latest.home||'Home';
-    document.getElementById('away').textContent=latest.away||'Away';
-    const sc=(latest.score||'0-0').split('-');
-    document.getElementById('hs').textContent=sc[0]||'0';
-    document.getElementById('as').textContent=sc[1]||'0';
-    document.getElementById('min').textContent=(latest.minute||0)+"'";
-    document.getElementById('rev').textContent=latest.revision;
-  }
-  const keys=Object.keys(counts).sort((a,b)=>meta[a].revision-meta[b].revision);
-  const total=rows.length||1;
-  const bar=document.getElementById('bar'); bar.innerHTML='';
-  const legend=document.getElementById('legend'); legend.innerHTML='';
-  keys.forEach((k,i)=>{
-    const pct=Math.round(counts[k]/total*100);
-    const c=palette[i%palette.length];
-    const seg=document.createElement('div');
-    seg.className='seg'; seg.style.width=pct+'%'; seg.style.background=c;
-    seg.textContent=pct>=8?pct+'%':'';
-    bar.appendChild(seg);
-    const lg=document.createElement('span');
-    lg.innerHTML='<span class="dot" style="background:'+c+'"></span>rev '+meta[k].revision+' ('+meta[k].score+') · '+pct+'%';
-    legend.appendChild(lg);
-  });
-  document.getElementById('meta').textContent=keys.length>1
-    ? 'canary in progress · '+keys.length+' revisions serving traffic'
-    : 'stable · single revision';
+	const counts={},meta={};
+	const N=24;
+	const reqs=[];
+	for(let i=0;i<N;i++) reqs.push(fetch('/api/whoami',{cache:'no-store'}).then(r=>r.json()).catch(()=>null));
+	const [live,rowsRaw]=await Promise.all([
+		fetch('/api/live',{cache:'no-store'}).then(r=>r.ok?r.json():null).catch(()=>null),
+		Promise.all(reqs)
+	]);
+	const rows=rowsRaw.filter(Boolean);
+
+	let latest=null;
+	for(const r of rows){
+		const key=r.revision+' · '+r.score;
+		counts[key]=(counts[key]||0)+1;
+		meta[key]=r;
+		if(!latest||r.revision>=latest.revision) latest=r;
+	}
+
+	if(live){
+		const home=live.home||'Home';
+		const away=live.away||'Away';
+		const hs=parseIntSafe(live.home_score);
+		const as=parseIntSafe(live.away_score);
+		const total=hs+as;
+		const key=(live.match_id||'?')+'|'+home+'|'+away;
+
+		document.getElementById('home').textContent=home;
+		document.getElementById('away').textContent=away;
+		document.getElementById('hflag').textContent=flagFor(home);
+		document.getElementById('aflag').textContent=flagFor(away);
+		document.getElementById('hs').textContent=hs;
+		document.getElementById('as').textContent=as;
+		document.getElementById('min').textContent=parseIntSafe(live.minute)+"'";
+		document.getElementById('feedrev').textContent=parseIntSafe(live.revision);
+		document.getElementById('status').textContent=live.status||'unknown';
+
+		if(state.matchKey && state.matchKey!==key){
+			showSwitcher('Now tracking: '+home+' vs '+away);
+			document.getElementById('meme').textContent='Match switch complete. New timeline loaded.';
+		}
+		if(state.total>=0 && total>state.total){
+			boomGoal();
+		} else if((state.memeTick++%10)===0){
+			const memeEl=document.getElementById('meme');
+			memeEl.textContent=meme(steadyMemes);
+			memeEl.classList.remove('goal');
+		}
+		state.matchKey=key;
+		state.total=total;
+	}
+
+	if(latest){
+		document.getElementById('rev').textContent=latest.revision;
+	}
+
+	const keys=Object.keys(counts).sort((a,b)=>meta[a].revision-meta[b].revision);
+	const totalRows=rows.length||1;
+	const bar=document.getElementById('bar'); bar.innerHTML='';
+	const legend=document.getElementById('legend'); legend.innerHTML='';
+	keys.forEach((k,i)=>{
+		const pct=Math.round(counts[k]/totalRows*100);
+		const c=palette[i%palette.length];
+		const seg=document.createElement('div');
+		seg.className='seg'; seg.style.width=pct+'%'; seg.style.background=c;
+		seg.textContent=pct>=8?pct+'%':'';
+		bar.appendChild(seg);
+		const lg=document.createElement('span');
+		lg.innerHTML='<span class="dot" style="background:'+c+'"></span>rev '+meta[k].revision+' ('+meta[k].score+') · '+pct+'%';
+		legend.appendChild(lg);
+	});
+	document.getElementById('meta').textContent=keys.length>1
+		? 'canary in progress · '+keys.length+' revisions serving traffic'
+		: 'stable · single revision';
 }
 sample(); setInterval(sample,1500);
 </script>
