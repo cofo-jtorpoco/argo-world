@@ -53,9 +53,9 @@ spec:
           env:
             - {name: MATCH_HOME,     value: "France"}   # promote-field: home
             - {name: MATCH_AWAY,     value: "England"}   # promote-field: away
-            - {name: MATCH_SCORE,    value: "0-3"}        # promote-field: score
-            - {name: MATCH_REVISION, value: "3"}          # promote-field: revision
-            - {name: MATCH_MINUTE,   value: "39"}          # promote-field: minute
+            - {name: MATCH_SCORE,    value: "0-4"}        # promote-field: score
+            - {name: MATCH_REVISION, value: "4"}          # promote-field: revision
+            - {name: MATCH_MINUTE,   value: "48"}          # promote-field: minute
             - {name: MATCH_FEED_URL, value: "http://match-feed.worldcup.svc.cluster.local:8080/match/current"}
             - name: POD_NAME
               valueFrom: {fieldRef: {fieldPath: metadata.name}}
