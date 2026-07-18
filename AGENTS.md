@@ -77,6 +77,18 @@ respétalos:
    ninguna parte**. Si algo se sincroniza "para siempre", mira `kubectl -n argocd get pods`
    antes que los manifiestos. Subido a 1536Mi.
 
+10. **Cambiar de partido rompía el sistema entero.** `classify()` comparaba marcadores sin
+    mirar el `match_id`, así que apuntar el feed a otro partido se leía como retroceso →
+    `ANOMALY` cada 30s → `rollback-score` abortando el Rollout → y como `prev` nunca avanza
+    tras una anomalía, el bucle se automantenía. Además `set-match` debe resetear los
+    `promote-field` del scoreboard **en el mismo commit**, o `/consistency` diverge y el
+    AnalysisTemplate aborta todo despliegue posterior. — `match-watcher`, `wft-set-match.yaml`
+11. **`status.abort` se queda pegado.** Una vez abortado, el Rollout aborta cada revisión
+    nueva al instante; `selfHeal` no lo limpia porque es status, no spec. Hay que quitarlo:
+    `kubectl patch rollout <x> --subresource=status --type=merge -p '{"status":{"abort":false}}'`.
+12. **`kubectl rollout restart rollout/<x>` NO funciona** (`no kind "Rollout" is registered`).
+    Un Rollout no es un Deployment: usa `kubectl argo rollouts restart <x>`.
+
 ## Cómo se rompe este stack
 
 El patrón de los nueve fallos: **el error nunca está donde miras**. Un sensor que no dispara, un

@@ -198,6 +198,10 @@ make status                   # salud de todas las capas (+ cm/match-state)
   `/api/whoami`. El desfase entre ambas es exactamente la latencia del pipeline GitOps.
 - **Barra de tráfico** — muestrea 24 requests cada 1.5 s y colorea por revisión: durante un
   canary se ve el split 20/80 → 50/50 → 100 en tiempo real.
+- **Clasificación por grupos** (`/api/standings`) — cierra el círculo que abre el
+  ApplicationSet: API → Workflow → git → 12 Applications → ConfigMaps → pantalla. El pod las
+  lee con el token proyectado de su SA (sin client-go, la imagen sigue distroless) y cachea
+  15 s, porque la página sondea cada 1.5 s desde 5 pods.
 - Un gol dispara flash + mensaje; cambiar de partido (`demo-live`, `demo-replay`) lo anuncia solo.
 
 ## Diseño
@@ -223,6 +227,8 @@ Verificado en el clúster, no solo validado:
 | ApplicationSet genera las Applications | ✅ 12/12 `Synced` + `Healthy`, 12 ConfigMaps |
 | Cadena de señales completa | ✅ `match-signals` → Sensor → `fulltime-archive` → commit `result:` |
 | Rollout blue-green desplegado | ✅ `standings` 2/2 |
+| Clasificación en pantalla | ✅ `/api/standings` sirve los 12 grupos con nombres y puntos |
+| Rollout tras cambio de partido | ✅ `Healthy`, `/consistency` → `consistent: true` |
 
 Los `CronWorkflow` corren cada minuto, así que el repo acumula commits `standings:` y `result:`
 por sí solo — son la evidencia durable de que el sistema está vivo.
