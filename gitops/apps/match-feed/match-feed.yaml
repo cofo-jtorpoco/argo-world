@@ -25,8 +25,8 @@ spec:
           imagePullPolicy: IfNotPresent
           ports: [{containerPort: 8080}]
           env:
-            - {name: MODE, value: "replay"}   # feed-field: mode
-            - {name: MATCH_ID, value: "64"}   # feed-field: match
+            - {name: MODE, value: "live"}   # feed-field: mode
+            - {name: MATCH_ID, value: "103"}   # feed-field: match
             - {name: REPLAY_SECONDS_PER_MINUTE, value: "1.0"}
           readinessProbe:
             httpGet: {path: /healthz, port: 8080}
